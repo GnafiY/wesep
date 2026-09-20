@@ -27,8 +27,10 @@ def main():
         configs = yaml.load(fin, Loader=yaml.FullLoader)
     print(configs)
 
-    model = get_model(
-        configs["model"]["tse_model"])(**configs["model_args"]["tse_model"])
+    model = get_model(configs["model"]["tse_model"])(
+        configs["model_args"]["tse_model"],
+        defer_pretrained=True,
+    )
     print(model)
 
     load_pretrained_model(model, args.checkpoint)

@@ -1,0 +1,125 @@
+dataloader_args:
+  batch_size: 10   #A100_40g: 5; A100_80g: 10
+  drop_last: true
+  num_workers: 6
+  pin_memory: true
+  prefetch_factor: 2
+
+dataset_args:
+  resample_rate: &sr 16000
+  sample_num_per_epoch: 0
+  shuffle: true
+  shuffle_args:
+    shuffle_size: 2500
+  chunk_len: 64000
+  chunk_random_start: True
+  chunk_short_policy: keep
+  noise_prob: 0
+  noise_lmdb_file: ./data/musan/lmdb
+  cues:
+    visual:
+      use: true
+      required: true
+  cue_processing:
+    visual:
+
+val_dataset_args:
+  collate:
+    wav_mix:
+      align: min
+    wav_target:
+      align: min
+    visual_aux:
+      align: min
+
+enable_amp: false
+exp_dir: exp/BSRNN
+gpus: [0, 1]
+log_batch_interval: 100
+
+loss:
+  - type: SISDR
+    output: speech
+    target: wav_target
+    weight: 1.0
+    stages: [train, val]
+
+model:
+  tse_model: TSE_BSRNN_VISUAL
+model_args:
+  tse_model:
+    separator:
+      sr: *sr
+      win: 512
+      stride: 128
+      feature_dim: 128
+      num_repeat: 6
+      causal: false  # false | true
+      nspk: 1
+      channels: 1
+      reference_channel: 0
+    visual:
+      features:
+        muse_visual:
+          enabled: True
+          input: muse_frontend  # raw_video | muse_frontend
+          vf_pretrained: ./pretrain_networks/visual_frontend.pt
+          freeze_frontend: true
+          upsample: True
+          fusion: "concat"  # additive | concat | multiply | FiLM
+          multi_fuse: false
+          ### Direct adapter: 512 -> 512
+          adapter:
+            type: direct
+            input_dim: 512
+            output_dim: 512
+          ### MuSE adapter: 512 -> 512
+          # adapter:
+          #   type: muse
+          #   input_dim: 512
+          #   output_dim: 512
+          #   num_layers: 5
+          ### ClearerVoice adapter: 512 -> 256, then 256 -> 512 -> 256
+          # adapter:
+          #   type: clearer
+          #   input_dim: 512
+          #   output_dim: 256
+          #   hidden_dim: 512
+          #   num_layers: 5
+
+model_init:
+  tse_model: null
+
+num_avg: 5
+num_epochs: 150
+
+optimizer:
+  tse_model: Adam
+optimizer_args:
+  tse_model:
+    lr: 0.001
+    weight_decay: 0.0001
+
+clip_grad: 5.0
+save_epoch_interval: 10
+
+scheduler:
+  tse_model:
+    # name: ExponentialDecrease
+    # interval: step
+    # args:
+    #   final_lr: 2.5e-05
+  ######## Fiexed LR Scheduler ########
+    # name: none
+  ######## Plateau Scheduler ########
+    name: PlateauHalf
+    interval: validation
+    args:
+      patience: 3
+      factor: 0.5
+      min_delta: 0.0
+      min_lr: 0.0
+      early_stop_patience: 6
+      early_stop: true
+
+seed: 42

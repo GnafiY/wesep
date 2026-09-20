@@ -36,7 +36,7 @@ def get_logger(outdir, fname):
     formatter = logging.Formatter(
         "[ %(levelname)s : %(asctime)s ] - %(message)s")
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="[ %(levelname)s : %(asctime)s ] - %(message)s",
     )
     logger = logging.getLogger("Pyobj, f")
@@ -166,7 +166,7 @@ def get_commandline_args():
     argv = [(arg.replace("'", "'\\''") if all(
         char not in arg
         for char in extra_chars) else "'" + arg.replace("'", "'\\''") + "'")
-        for arg in sys.argv]
+            for arg in sys.argv]
 
     return sys.executable + " " + " ".join(argv)
 

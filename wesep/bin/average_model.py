@@ -31,7 +31,7 @@ def get_args():
     parser.add_argument("--num",
                         default=5,
                         type=int,
-                        help="nums for averaged model")
+                        help="number of final checkpoints to average")
     parser.add_argument(
         "--min_epoch",
         default=0,
@@ -47,14 +47,14 @@ def get_args():
     parser.add_argument(
         "--mode",
         default="final",
-        type=str,
-        help="use last epochs for average or best epochs",
+        choices=("final", "best"),
+        help="average the final checkpoints or explicitly selected epochs",
     )
     parser.add_argument(
         "--epochs",
         default="1,2,3,4,5",
         type=str,
-        help="use last epochs for average or best epochs",
+        help="comma-separated epochs used by mode=best",
     )
     args = parser.parse_args()
     print(args)
@@ -64,23 +64,29 @@ def get_args():
 def main():
     args = get_args()
     if args.mode == "final":
-        path_list = glob.glob("{}/*[!avg][!final][!latest].pt".format(
-            args.src_path))
+        path_list = glob.glob(os.path.join(args.src_path, "checkpoint_*.pt"))
         path_list = sorted(
             path_list,
             key=lambda p: int(re.findall(r"(?<=checkpoint_)\d*(?=.pt)", p)[0]),
         )
         path_list = path_list[-args.num:]
     else:
-        epoch_indexes = list(args.epochs.split(","))
+        epoch_indexes = [
+            x.strip() for x in args.epochs.split(",") if x.strip()
+        ]
         path_list = [
             os.path.join(args.src_path, "checkpoint_" + x + ".pt")
             for x in epoch_indexes
         ]
+    if not path_list:
+        raise ValueError("No checkpoints were selected for averaging")
+    missing = [path for path in path_list if not os.path.isfile(path)]
+    if missing:
+        raise FileNotFoundError("Missing checkpoints: {}".format(missing))
+
     print(path_list)
     avg = None
-    num = args.num
-    assert num == len(path_list)
+    num = len(path_list)
     for path in path_list:
         print("Processing {}".format(path))
         states = torch.load(path, map_location=torch.device("cpu"))

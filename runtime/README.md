@@ -1,5 +1,10 @@
 # Libtorch backend on wesep
 
+> Last updated: 2026-09-21
+
+> [!WARNING]
+> This legacy runtime targets the previous positional-input TorchScript API
+> and is not supported by the current dictionary-based model interface.
 
 * Build. The build requires cmake 3.14 or above, and gcc/g++ 5.4 or above.
 
