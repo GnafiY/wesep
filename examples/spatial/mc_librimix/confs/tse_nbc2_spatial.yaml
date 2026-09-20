@@ -1,0 +1,119 @@
+dataloader_args:
+  batch_size: 1
+  drop_last: true
+  num_workers: 6
+  pin_memory: true
+  prefetch_factor: 6
+
+dataset_args:
+  resample_rate: &sr 16000
+  sample_num_per_epoch: 0
+  shuffle: true
+  shuffle_args:
+    shuffle_size: 2500
+  chunk_len: 48000
+  noise_prob: 0
+  noise_lmdb_file: ./data/musan/lmdb
+  cues:
+    spatial:
+      use: true
+      required: true
+  cue_processing:
+    spatial:
+
+val_dataset_args:
+  collate:
+    wav_mix:
+      align: min
+    wav_target:
+      align: min
+
+enable_amp: false
+exp_dir: exp/tse_nbc2_spatial_all
+gpus: [0, 1]
+log_batch_interval: 100
+
+loss:
+  - type: SISDR
+    output: speech
+    target: wav_target
+    weight: 1.0
+    stages: [train, val]
+
+model:
+  tse_model: TSE_NBC2_SPATIAL
+model_args:
+  tse_model:
+    separator:
+      sr: 16000
+      win: 512
+      stride: 256
+      channels: 4
+      reference_channel: 0
+      nspk: 1
+      n_layers: 8
+      dim_hidden: 96
+      dim_ffn: 192
+      block_kwargs:
+        n_heads: 2
+        dropout: 0.1
+        conv_kernel_size: 3
+        n_conv_groups: 8
+        norms: [LN, GBN, GBN]  # Each stage supports LN | BN | GN | GBN.
+    spatial:
+      input_fields: [azimuth, elevation]
+      array:
+        mic_positions:
+          - [0.02285, 0.02285, 0.0]
+          - [-0.02285, 0.02285, 0.0]
+          - [-0.02285, -0.02285, 0.0]
+          - [0.02285, -0.02285, 0.0]
+      pairs:
+        - [0, 1]
+        - [1, 2]
+        - [2, 3]
+        - [0, 3]
+      features:
+        ipd:
+          enabled: true
+        cdf:
+          enabled: true
+        sdf:
+          enabled: true
+        delta_stft:
+          enabled: true
+        cyc_doaemb:
+          enabled: true
+          alpha: 20
+          encoding_dim: 40
+          use_elevation: true
+          fusion: multiply  # additive | concat | multiply | FiLM
+        initstate_emb:
+          enabled: false
+
+find_unused_parameters: false
+
+model_init:
+  tse_model: null
+
+num_avg: 10
+num_epochs: 150
+
+optimizer:
+  tse_model: Adam
+optimizer_args:
+  tse_model:
+    lr: 0.001
+    weight_decay: 0.0001
+
+clip_grad: 5.0
+save_epoch_interval: 1
+
+scheduler:
+  tse_model:
+    name: ExponentialDecrease
+    interval: step
+    args:
+      final_lr: 2.5e-05
+
+seed: 42

@@ -37,5 +37,12 @@ exp
 data
 raw_wav
 tensorboard
-**/*build*
+# **/*build*
 wespeaker_models
+
+# Model artifacts
+*.pt
+*.onnx
+
+# Personal job submission scripts
+submit*.sh

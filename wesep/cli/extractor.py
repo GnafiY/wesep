@@ -1,198 +1,272 @@
-import os
-import sys
+import json
+import logging
+from pathlib import Path
 
-from silero_vad import load_silero_vad, get_speech_timestamps
-import torch
-import torchaudio
-import torchaudio.compliance.kaldi as kaldi
-import yaml
 import soundfile
+import torch
+import yaml
 
-from wesep.cli.hub import Hub
+from wesep.cli.input_reader import DirectInputReader
 from wesep.cli.utils import get_args
 from wesep.models import get_model
 from wesep.utils.checkpoint import load_pretrained_model
 from wesep.utils.utils import set_seed
 
+CUE_KEYS = {
+    "audio": "audio_aux",
+    "spatial": "spatial_aux",
+    "visual": "visual_aux",
+    "textual": "textual_aux",
+}
+
+CLI_CUE_DEFAULTS = {
+    "audio_waveform": {
+        "shape": [1, 1],
+        "fill_value": 0.0
+    },  # [C, T]
+    "audio_embedding": {
+        "shape": [192],
+        "fill_value": 0.0
+    },  # [D]
+    "spatial": {
+        "shape": [2],
+        "fill_value": 0.0
+    },  # [F] or [F, T]
+    "visual_raw_video": {
+        "shape": [112, 112, 3, 1],
+        "fill_value": 0.0,
+    },  # [H, W, C, T]
+    "visual_feature": {
+        "shape": [512, 1],
+        "fill_value": 0.0,
+    },  # [D, T]
+    "textual": {
+        "shape": [1],
+        "fill_value": 0
+    },  # [T]
+}
+
 
 class Extractor:
+    """Run one target-level extraction request from tensors or local files."""
 
-    def __init__(self, model_dir: str):
+    def __init__(self, model_dir, config_path=None, checkpoint_path=None):
+        """Load one local model package and its resolved inference config."""
         set_seed()
-
-        config_path = os.path.join(model_dir, "config.yaml")
-        model_path = os.path.join(model_dir, "avg_model.pt")
-        with open(config_path, "r") as fin:
-            configs = yaml.load(fin, Loader=yaml.FullLoader)
-            if 'spk_model_init' in configs['model_args']['tse_model']:
-                configs['model_args']['tse_model']['spk_model_init'] = False
-        self.model = get_model(configs["model"]["tse_model"])(
-            **configs["model_args"]["tse_model"]
+        model_dir = Path(model_dir)
+        config_path = Path(config_path or model_dir / "config.yaml")
+        checkpoint_path = Path(checkpoint_path or model_dir / "avg_model.pt")
+        with config_path.open("r", encoding="utf-8") as fin:
+            self.configs = yaml.safe_load(fin)
+        model_name = self.configs["model"]["tse_model"]
+        model_config = self.configs["model_args"]["tse_model"]
+        self.model = get_model(model_name)(
+            model_config,
+            defer_pretrained=True,
         )
-        load_pretrained_model(self.model, model_path)
+        load_pretrained_model(self.model, str(checkpoint_path))
         self.model.eval()
-        self.vad = load_silero_vad()
-        self.table = {}
-        self.resample_rate = configs["dataset_args"].get("resample_rate", 16000)
-        self.apply_vad = False
+
+        self.cues = (self.configs.get("dataset_args", {}).get("cues", {})
+                     or {})
+        self.resample_rate = self.configs.get("dataset_args",
+                                              {}).get("resample_rate", 16000)
+        self.input_reader = DirectInputReader(
+            self.resample_rate,
+            model_config,
+            config_path,
+            model_dir,
+        )
         self.device = torch.device("cpu")
-        self.wavform_norm = True
         self.output_norm = True
 
-        self.speaker_feat = configs["model_args"]["tse_model"].get("spk_feat", False)
-        self.joint_training = configs["model_args"]["tse_model"].get(
-            "joint_training", False
-        )
-
-    def set_wavform_norm(self, wavform_norm: bool):
-        self.wavform_norm = wavform_norm
-
-    def set_resample_rate(self, resample_rate: int):
-        self.resample_rate = resample_rate
-
-    def set_vad(self, apply_vad: bool):
-        self.apply_vad = apply_vad
-
-    def set_device(self, device: str):
+    def set_device(self, device):
+        """Move the model to the selected inference device."""
         self.device = torch.device(device)
         self.model = self.model.to(self.device)
 
-    def set_output_norm(self, output_norm: bool):
-        self.output_norm = output_norm
+    def set_output_norm(self, output_norm):
+        """Enable or disable peak normalization for returned waveforms."""
+        self.output_norm = bool(output_norm)
 
-    def compute_fbank(
-        self,
-        wavform,
-        sample_rate=16000,
-        num_mel_bins=80,
-        frame_length=25,
-        frame_shift=10,
-        cmn=True,
-    ):
-        feat = kaldi.fbank(
-            wavform,
-            num_mel_bins=num_mel_bins,
-            frame_length=frame_length,
-            frame_shift=frame_shift,
-            sample_frequency=sample_rate,
-        )
-        if cmn:
-            feat = feat - torch.mean(feat, 0)
-        return feat
+    def predict(self, batch):
+        """Run a model-ready batch and return its named output dictionary."""
+        model_batch = {
+            key:
+            value.to(self.device) if isinstance(value, torch.Tensor) else value
+            for key, value in batch.items()
+        }
+        with torch.no_grad():
+            return self.model(model_batch)
 
-    def extract_speech(self, audio_path: str, audio_path_2: str):
-        pcm_mix, sample_rate_mix = torchaudio.load(
-            audio_path, normalize=self.wavform_norm
-        )
-        pcm_enroll, sample_rate_enroll = torchaudio.load(
-            audio_path_2, normalize=self.wavform_norm
-        )
-        return self.extract_speech_from_pcm(pcm_mix,
-                                            sample_rate_mix,
-                                            pcm_enroll,
-                                            sample_rate_enroll)
+    def _cue_input_type(self, cue_name):
+        """Resolve the raw or precomputed input expected by one frontend."""
+        frontend_name = {
+            "audio": "spk_ft",
+            "visual": "visual_ft",
+        }.get(cue_name)
+        if frontend_name and hasattr(self.model, frontend_name):
+            return getattr(self.model, frontend_name).input_type
 
-    def extract_speech_from_pcm(self,
-                                pcm_mix: torch.Tensor,
-                                sample_rate_mix: int,
-                                pcm_enroll: torch.Tensor,
-                                sample_rate_enroll: int):
-        if self.apply_vad:
-            # TODO(Binbin Zhang): Refine the segments logic, here we just
-            # suppose there is only silence at the start/end of the speech
-            # Only do vad on the enrollment
-            vad_sample_rate = 16000
-            wav = pcm_enroll
-            if wav.size(0) > 1:
-                wav = wav.mean(dim=0, keepdim=True)
-            if sample_rate_enroll != vad_sample_rate:
-                transform = torchaudio.transforms.Resample(
-                    orig_freq=sample_rate_enroll, new_freq=vad_sample_rate
-                )
-                wav = transform(wav)
+        model_config = self.configs["model_args"]["tse_model"]
+        if cue_name == "audio":
+            features = model_config.get("speaker", {}).get("features", {})
+            inputs = {
+                conf.get("input", "waveform")
+                for conf in features.values() if conf.get("enabled", False)
+            }
+            return next(iter(inputs), "waveform")
+        if cue_name == "visual":
+            features = model_config.get("visual", {}).get("features", {})
+            inputs = {
+                conf.get("input", "raw_video")
+                for conf in features.values() if conf.get("enabled", False)
+            }
+            return next(iter(inputs), "raw_video")
+        return cue_name
 
-            segments = get_speech_timestamps(wav, self.vad, return_seconds=True)
-            pcmTotal = torch.Tensor()
-            if len(segments) > 0:  # remove all the silence
-                for segment in segments:
-                    start = int(segment["start"] * sample_rate_enroll)
-                    end = int(segment["end"] * sample_rate_enroll)
-                    pcmTemp = pcm_enroll[0, start:end]
-                    pcmTotal = torch.cat([pcmTotal, pcmTemp], 0)
-                pcm_enroll = pcmTotal.unsqueeze(0)
-            else:  # all silence, nospeech
-                return None
-
-        pcm_mix = pcm_mix.to(torch.float)
-        if sample_rate_mix != self.resample_rate:
-            pcm_mix = torchaudio.transforms.Resample(
-                orig_freq=sample_rate_mix, new_freq=self.resample_rate
-            )(pcm_mix)
-        pcm_enroll = pcm_enroll.to(torch.float)
-        if sample_rate_enroll != self.resample_rate:
-            pcm_enroll = torchaudio.transforms.Resample(
-                orig_freq=sample_rate_enroll, new_freq=self.resample_rate
-            )(pcm_enroll)
-
-        if self.joint_training:
-            if self.speaker_feat:
-                feats = self.compute_fbank(
-                    pcm_enroll, sample_rate=self.resample_rate, cmn=True
-                )
-                feats = feats.unsqueeze(0)
-            else:
-                feats = pcm_enroll
-
-            feats = feats.to(self.device)
-            pcm_mix = pcm_mix.to(self.device)
-            with torch.no_grad():
-                outputs = self.model(pcm_mix, feats)
-                outputs = outputs[0] if isinstance(outputs, (list, tuple)) else outputs
-            target_speech = outputs.to(torch.device("cpu"))
-            if self.output_norm:
-                target_speech = (
-                    target_speech
-                    / abs(target_speech).max(dim=1, keepdim=True).values * 0.9
-                )
-            return target_speech
+    def _default_cue(self, cue_name, cue_conf):
+        """Create a structural tensor for one missing optional cue."""
+        input_type = self._cue_input_type(cue_name)
+        if cue_name == "audio":
+            default_key = f"audio_{input_type}"
+        elif cue_name == "visual":
+            default_key = ("visual_raw_video"
+                           if input_type == "raw_video" else "visual_feature")
         else:
-            return None
+            default_key = cue_name
+
+        fallback = CLI_CUE_DEFAULTS[default_key]
+        shape = fallback["shape"]
+        fill_value = fallback["fill_value"]
+        if "default_shape" in cue_conf:
+            shape = cue_conf["default_shape"]
+        else:
+            logging.warning(
+                "Optional %s cue is missing; using CLI default shape %s. "
+                "Set dataset_args.cues.%s.default_shape to override it.",
+                cue_name,
+                shape,
+                cue_name,
+            )
+        fill_value = cue_conf.get("fill_value", fill_value)
+        return torch.full(tuple(shape), fill_value)
+
+    def build_batch(self, item):
+        """Read one direct-input item and create a batch of size one."""
+        if "wav_mix" not in item:
+            raise ValueError("Direct inference requires 'wav_mix'.")
+
+        batch = {"wav_mix": self.input_reader.read(item["wav_mix"], "wav_mix")}
+        if batch["wav_mix"].ndim != 2:
+            raise ValueError("Mixture waveform must have shape [C, T], got "
+                             f"{tuple(batch['wav_mix'].shape)}")
+
+        # Read supplied cues before materializing any configured fallback.
+        for cue_name, aux_key in CUE_KEYS.items():
+            if aux_key in item and item[aux_key] is not None:
+                batch[aux_key] = self.input_reader.read(
+                    item[aux_key],
+                    aux_key,
+                    input_type=self._cue_input_type(cue_name),
+                )
+                batch[f"{aux_key}_present"] = torch.tensor(True)
+
+        # Required cues fail clearly; optional cues receive a structural value.
+        for cue_name, cue_conf in self.cues.items():
+            if not cue_conf.get("use", False):
+                continue
+            aux_key = CUE_KEYS.get(cue_name)
+            if aux_key is None or aux_key in batch:
+                continue
+            if cue_conf.get("required", True):
+                raise ValueError(f"Required {cue_name} cue was not provided.")
+            batch[aux_key] = self._default_cue(cue_name, cue_conf)
+            batch[f"{aux_key}_present"] = torch.tensor(False)
+
+        # Add the singleton batch axis after every file has been decoded.
+        for key, value in list(batch.items()):
+            if isinstance(value, torch.Tensor):
+                batch[key] = value.unsqueeze(0)
+        return batch
+
+    def predict_files(self, item):
+        """Read one mixture/cue mapping and return speech shaped [S, T]."""
+        speech = self.predict(self.build_batch(item))["speech"]
+        if speech.ndim != 3 or speech.shape[0] != 1:
+            raise RuntimeError(
+                f"Model speech output must have shape [1, S, T], got "
+                f"{tuple(speech.shape)}")
+        speech = speech[0].detach().cpu()
+        if self.output_norm:
+            peak = speech.abs().amax(dim=-1, keepdim=True).clamp_min(1e-8)
+            speech = speech / peak * 0.9
+        return speech
 
 
-def load_model(language: str) -> Extractor:
-    model_path = Hub.get_model(language)
-    return Extractor(model_path)
+def load_model(language):
+    """Load a model package exposed by the optional download hub."""
+    from wesep.cli.hub import Hub
+    return Extractor(Hub.get_model(language))
 
 
-def load_model_local(model_dir: str) -> Extractor:
-    return Extractor(model_dir)
+def load_model_local(model_dir, config_path=None, checkpoint_path=None):
+    """Load a model package from a local directory."""
+    return Extractor(model_dir, config_path, checkpoint_path)
+
+
+def _write_speech(speech, output_path, sample_rate):
+    """Write one output file per estimated source."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if speech.shape[0] == 1:
+        soundfile.write(output_path, speech[0].numpy(), sample_rate)
+        return
+
+    for index, source in enumerate(speech, start=1):
+        source_path = output_path.with_name(
+            f"{output_path.stem}_s{index}{output_path.suffix}")
+        soundfile.write(source_path, source.numpy(), sample_rate)
 
 
 def main():
+    """Run direct single-request or JSONL-manifest inference."""
     args = get_args()
-    if args.pretrain == "":
-        if args.bsrnn:
-            model = load_model("bsrnn")
-        else:
-            model = load_model(args.language)
-    else:
-        model = load_model_local(args.pretrain)
-    model.set_resample_rate(args.resample_rate)
-    model.set_vad(args.vad)
-    model.set_device(args.device)
-    model.set_output_norm(args.output_norm)
-    if args.task == "extraction":
-        speech = model.extract_speech(args.audio_file, args.audio_file2)
-        if speech is not None:
-            if args.normalize_output:
-                speech = speech / abs(speech).max(dim=1, keepdim=True).values * 0.9
-            soundfile.write(args.output_file, speech[0], args.resample_rate)
-            print("Succeed, see {}".format(args.output_file))
-        else:
-            print("Fails to extract the target speech")
-    else:
-        print("Unsupported task {}".format(args.task))
-        sys.exit(-1)
+    extractor = load_model_local(
+        args.model_dir,
+        config_path=args.config,
+        checkpoint_path=args.checkpoint,
+    )
+    extractor.set_device(args.device)
+    extractor.set_output_norm(args.output_norm)
+
+    if args.manifest:
+        output_dir = Path(args.output_dir)
+        used_keys = {}
+        with Path(args.manifest).open("r", encoding="utf-8") as fin:
+            for line in fin:
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                key = item.get("key", Path(item["wav_mix"]).stem)
+                count = used_keys.get(key, 0) + 1
+                used_keys[key] = count
+                if count > 1:
+                    key = f"{key}_{count}"
+                output_path = item.get("output", output_dir / f"{key}.wav")
+                speech = extractor.predict_files(item)
+                _write_speech(speech, output_path, extractor.resample_rate)
+        return
+
+    item = {
+        "wav_mix": args.wav_mix,
+        "audio_aux": args.audio_aux,
+        "spatial_aux": args.spatial_aux,
+        "visual_aux": args.visual_aux,
+        "textual_aux": args.textual_aux,
+    }
+    speech = extractor.predict_files(item)
+    _write_speech(speech, args.output_file, extractor.resample_rate)
 
 
 if __name__ == "__main__":

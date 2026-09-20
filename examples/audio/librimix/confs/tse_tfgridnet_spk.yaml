@@ -1,0 +1,143 @@
+dataloader_args:
+  batch_size: 3   #A100_40g: 1; A100_80g: 3
+  drop_last: true
+  num_workers: 6
+  pin_memory: true
+  prefetch_factor: 6
+
+dataset_args:
+  resample_rate: &sr 16000
+  sample_num_per_epoch: 0
+  shuffle: true
+  shuffle_args:
+    shuffle_size: 2500
+  chunk_len: 48000
+  noise_prob: 0
+  cues:
+    audio:
+      use: true
+      required: true
+  cue_processing:
+    audio:
+      reverb_enroll_prob: 0
+      noise_enroll_prob: 0
+
+enable_amp: false
+exp_dir: exp/TFGridNet_SPK
+gpus: [0]
+log_batch_interval: 100
+
+loss:
+  - type: SISDR
+    output: speech
+    target: wav_target
+    weight: 1.0
+    stages: [train, val]
+
+model:
+  tse_model: TSE_TFGRIDNET_SPK
+model_args:
+  tse_model:
+    separator:
+      n_fft: 256
+      stride: 128
+      channels: 1
+      n_layers: 6
+      hidden_channels: 256
+      n_head: 4
+      approx_qk_dim: 512
+      emb_dim: 128
+      emb_ks: 1
+      emb_hs: 1
+      causal: false  # false | true
+      estimation: spec  # spec | mask; mask is recommended for causal TFGridNet.
+      attention_context: null  # In causal mode, null keeps all history; an integer limits it.
+      nspk: 1
+    speaker:
+      features:
+        listen:
+          enabled: false
+          glue: 512
+        usef:
+          enabled: false
+          approx_qk_dim: 512
+          n_head: 4
+          t_ksize: 3
+        tfmap:
+          enabled: true
+          type: spec
+        context:
+          enabled: true
+          speaker_model:
+          embed_dim: 512
+          num_heads: 2
+          fusion: multiply  # additive | concat | multiply | FiLM
+        spkemb:
+          enabled: false
+          input: waveform  # waveform | embedding
+          speaker_model:
+          fusion: multiply  # additive | concat | multiply | FiLM
+      speaker_model:
+        fbank:
+          num_mel_bins: 80
+          frame_shift: 10
+          frame_length: 25
+          dither: 1.0
+          sample_rate: *sr
+        speaker_encoder:
+          model: ECAPA_TDNN_GLOB_c512
+          pretrained: ./wespeaker_models/voxceleb_ECAPA512/avg_model.pt
+          spk_args:
+            embed_dim: 192
+            feat_dim: 80
+            pooling_func: ASTP
+
+model_init:
+  tse_model: null
+
+num_avg: 5
+num_epochs: 150
+clip_grad: 5.0
+save_epoch_interval: 0
+
+optimizer:
+  tse_model: Adam
+optimizer_args:
+  tse_model:
+    lr: 0.001
+    weight_decay: 0.0001
+
+scheduler:
+  tse_model:
+    warmup:
+      enabled: false
+      by: epoch
+      epochs: 0
+      start_factor: 0.0
+
+    ####### Validation-loss plateau decay with optional early stopping
+    # name: PlateauHalf
+    # interval: validation
+    # args:
+    #   patience: 3  # epochs with no improvement before reducing LR
+    #   early_stop_patience: 7  # epochs without improvement before early stopping
+    #   factor: 0.5
+    #   min_delta: 0.0
+    #   min_lr: 2.5e-05  # set to 0.0 or remove this item to disable the lower bound
+    #   early_stop: true
+
+    ####### Step-level exponential decay
+    name: ExponentialDecrease
+    interval: step
+    args:
+      final_lr: 2.5e-05
+
+    ####### Fixed epoch/step decay
+    # name: StepDecay
+    # interval: epoch          # epoch | step
+    # args:
+    #   step_size: 10          # epochs if interval=epoch, steps if interval=step
+    #   gamma: 0.5
+    #   min_lr: 2.5e-05
+
+seed: 42

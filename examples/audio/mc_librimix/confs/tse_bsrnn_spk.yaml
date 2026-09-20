@@ -1,0 +1,162 @@
+dataloader_args:
+  batch_size: 2 #RTX2080 1, V100: 8, A800: 16
+  drop_last: true
+  num_workers: 6
+  pin_memory: true
+  prefetch_factor: 6
+
+dataset_args:
+  resample_rate: &sr 16000
+  sample_num_per_epoch: 0
+  shuffle: true
+  shuffle_args:
+    shuffle_size: 2500
+  chunk_len: 48000
+  noise_prob: 0 # prob to add noise aug per sample
+  noise_lmdb_file: './data/musan/lmdb'
+  cues:
+    audio:
+      use: true
+      required: true
+  cue_processing:
+    audio:
+      reverb_enroll_prob: 0
+      noise_enroll_prob: 0
+
+val_dataset_args:
+  collate:
+    wav_mix:
+      align: min
+    wav_target:
+      align: min
+
+enable_amp: false
+exp_dir: exp/BSRNN
+gpus: [0, 1]
+log_batch_interval: 100
+
+loss:
+  - type: SISDR
+    output: speech
+    target: wav_target
+    weight: 1.0
+    stages: [train, val]
+
+model:
+  tse_model: TSE_BSRNN_SPK
+model_args:
+  tse_model:
+    separator:
+      sr: *sr
+      win: 512
+      stride: 128
+      channels: 4
+      reference_channel: 0
+      feature_dim: 128
+      num_repeat: 6
+      causal: False  # false | true
+      nspk: 1
+    speaker:
+      features:
+        tfmap:
+          enabled: False
+          type: "spec"   # 'spec'
+        context:
+          enabled: True
+          speaker_model:
+          embed_dim: 512     # Need check the speaker encoder in wespeaker
+          atten_dim: 128         # dim in cross-attention
+          num_heads: 2
+          fusion: "multiply"  # additive | concat | multiply | FiLM
+        spkemb:
+          enabled: False
+          input: waveform  # waveform | embedding
+          speaker_model:
+          fusion: "multiply"  # additive | concat | multiply | FiLM
+      speaker_model:
+        fbank:
+          num_mel_bins: 80
+          frame_shift: 10
+          frame_length: 25
+          dither: 1.0
+          sample_rate: *sr       # sampling rate
+        # ---- Speaker Encoder
+        speaker_encoder:
+          model: ECAPA_TDNN_GLOB_c512
+          pretrained: ./wespeaker_models/voxceleb_ECAPA512/avg_model.pt
+          spk_args:
+            embed_dim: 192         # speaker embedding
+            feat_dim: 80         # num_mel_bins
+            pooling_func: "ASTP"
+          ####### ResNet    The pretrained speaker encoders are available from: https://github.com/wenet-e2e/wespeaker/blob/master/docs/pretrained.md
+          # model: ResNet34 # ResNet18, ResNet34, ResNet50, ResNet101, ResNet152
+          # pretrained: ./wespeaker_models/voxceleb_resnet34/avg_model.pt
+          # spk_args:
+          #   feat_dim: 80
+          #   embed_dim: &embed_dim 256
+          #   pooling_func: "TSTP" # TSTP, ASTP, MQMHASTP
+          #   two_emb_layer: False
+          ####### CAMPPlus
+          # model: CAMPPlus
+          # pretrained: null
+          # spk_args:
+          #   feat_dim: 80
+          #   embed_dim: &embed_dim 192
+          #   pooling_func: "TSTP" # TSTP, ASTP, MQMHASTP
+          #################################################################
+# find_unused_parameters: True
+
+# For finetuning, second-stage training, or curriculum-style initialization.
+# This loads the whole TSE model weights only. Optimizer, scheduler, scaler,
+# epoch, and checkpoint metadata are not restored. Use `checkpoint` to resume
+# the same training run.
+model_init:
+  tse_model: null
+
+num_avg: 5
+num_epochs: 150
+
+optimizer:
+  tse_model: Adam
+optimizer_args:
+  tse_model:
+    lr: 0.001
+    weight_decay: 0.0001
+
+clip_grad: 5.0
+save_epoch_interval: 0
+
+scheduler:
+  tse_model:
+    warmup:
+      enabled: false
+      by: epoch
+      epochs: 0
+      start_factor: 0.0
+
+    ####### Validation-loss plateau decay with optional early stopping
+    name: PlateauHalf
+    interval: validation
+    args:
+      patience: 3  # epochs with no improvement before reducing LR
+      early_stop_patience: 7  # epochs without improvement before early stopping
+      factor: 0.5
+      min_delta: 0.0
+      min_lr: 2.5e-05  # set to 0.0 or remove this item to disable the lower bound
+      early_stop: true
+
+    ####### Step-level exponential decay
+    # name: ExponentialDecrease
+    # interval: step
+    # args:
+    #   final_lr: 2.5e-05
+
+    ####### Fixed epoch/step decay
+    # name: StepDecay
+    # interval: epoch          # epoch | step
+    # args:
+    #   step_size: 10          # epochs if interval=epoch, steps if interval=step
+    #   gamma: 0.5
+    #   min_lr: 2.5e-05
+
+seed: 42

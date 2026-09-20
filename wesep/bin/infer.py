@@ -8,20 +8,22 @@ import soundfile
 import torch
 from torch.utils.data import DataLoader
 
-from wesep.dataset.dataset import Dataset, tse_collate_fn_2spk
+from wesep.dataset.dataset import Dataset
+from wesep.dataset.collate import (
+    BASE_COLLECT_KEYS,
+    build_collect_keys,
+    tse_collate_fn,
+)
 from wesep.models import get_model
 from wesep.utils.checkpoint import load_pretrained_model
-from wesep.utils.file_utils import read_label_file, read_vec_scp_file
 from wesep.utils.score import cal_SISNRi
+from wesep.utils.file_utils import load_yaml
 from wesep.utils.utils import (
     generate_enahnced_scp,
     get_logger,
     parse_config_or_kwargs,
     set_seed,
 )
-
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
 
 def infer(config="confs/conf.yaml", **kwargs):
@@ -37,7 +39,12 @@ def infer(config="confs/conf.yaml", **kwargs):
 
     rank = 0
     set_seed(configs["seed"] + rank)
-    gpu = configs["gpus"]
+    gpu = configs.get("gpus", 0)
+    if isinstance(gpu, (list, tuple)):
+        if not gpu:
+            raise ValueError("gpus must contain at least one device")
+        gpu = gpu[0]
+    gpu = int(gpu)
     device = (torch.device("cuda:{}".format(gpu))
               if gpu >= 0 else torch.device("cpu"))
 
@@ -47,10 +54,10 @@ def infer(config="confs/conf.yaml", **kwargs):
     else:
         sample_rate = 8000
 
-    if 'spk_model_init' in configs['model_args']['tse_model']:
-        configs['model_args']['tse_model']['spk_model_init'] = False
-    model = get_model(
-        configs["model"]["tse_model"])(**configs["model_args"]["tse_model"])
+    model = get_model(configs["model"]["tse_model"])(
+        configs["model_args"]["tse_model"],
+        defer_pretrained=True,
+    )
     model_path = os.path.join(configs["checkpoint"])
     load_pretrained_model(model, model_path)
 
@@ -72,115 +79,85 @@ def infer(config="confs/conf.yaml", **kwargs):
     model = model.to(device)
     model.eval()
 
-    test_spk_embeds = configs.get("test_spk_embeds", None)
-    test_spk1_embed_scp = configs["test_spk1_enroll"]
-    test_spk2_embed_scp = configs["test_spk2_enroll"]
-    joint_training = configs["model_args"]["tse_model"].get(
-        "joint_training", None)
-    if not joint_training and test_spk_embeds:
-        test_spk2embed_dict = read_vec_scp_file(test_spk_embeds)
-    else:
-        test_spk2embed_dict = read_label_file(configs["test_spk2utt"])
-
-    test_spk1_embed = read_label_file(test_spk1_embed_scp)
-    test_spk2_embed = read_label_file(test_spk2_embed_scp)
-
-    lines = len(test_spk2embed_dict)
-
+    configs["dataset_args"]["whole_utt"] = True
     test_dataset = Dataset(
         configs["data_type"],
         configs["test_data"],
         configs["dataset_args"],
-        test_spk2embed_dict,
-        test_spk1_embed,
-        test_spk2_embed,
         state="test",
-        joint_training=joint_training,
-        whole_utt=configs.get("whole_utt", True),
         repeat_dataset=configs.get("repeat_dataset", False),
+        cues_yaml=configs.get("test_cues", None),
+        expand_targets=True,
     )
-    test_dataloader = DataLoader(test_dataset,
-                                 batch_size=1,
-                                 collate_fn=tse_collate_fn_2spk)
-    test_iter = lines // 2
-    logger.info("test number: {}".format(test_iter))
+    test_collect_keys = build_collect_keys(
+        load_yaml(configs["test_cues"]),
+        configs["dataset_args"],
+        BASE_COLLECT_KEYS,
+    )
+    test_dataloader = DataLoader(
+        test_dataset,
+        batch_size=1,
+        collate_fn=lambda batch: tse_collate_fn(batch, test_collect_keys))
+
+    with open(configs["test_data"], "r", encoding="utf-8") as f:
+        test_iter = sum(1 for _ in f)
+    logger.info("test mixtures: {}".format(test_iter))
 
     with torch.no_grad():
         for i, batch in enumerate(test_dataloader):
-            features = batch["wav_mix"]
-            targets = batch["wav_targets"]
-            enroll = batch["spk_embeds"]
             spk = batch["spk"]
             key = batch["key"]
 
-            features = features.float().to(device)  # (B,T,F)
-            targets = targets.float().to(device)
-            enroll = enroll.float().to(device)
+            # Move tensor fields without changing bool, integer, or float dtype.
+            for batch_key, value in batch.items():
+                if isinstance(value, torch.Tensor):
+                    batch[batch_key] = value.to(device)
 
-            outputs = model(features, enroll)
-            if isinstance(outputs, (list, tuple)):
-                outputs = outputs[0]
+            model_outputs = model(batch)
+            speech = model_outputs["speech"]
+            if speech.ndim != 3 or speech.size(1) != 1:
+                raise RuntimeError(
+                    "Current TSE inference expects speech shaped [B, 1, T], "
+                    f"got {tuple(speech.shape)}")
+            outputs = speech[:, 0].cpu()
 
-            if torch.min(outputs.max(dim=1).values) > 0:
-                outputs = ((outputs /
-                            abs(outputs).max(dim=1, keepdim=True)[0] *
-                            0.9).cpu().numpy())
-            else:
-                outputs = outputs.cpu().numpy()
+            ref = batch["wav_target"][:, 0].cpu().numpy()
+            mix = batch["wav_mix"][:, 0].cpu().numpy()
 
-            if sign_save_wav:
-                file1 = os.path.join(
-                    save_audio_dir,
-                    f"Utt{total_cnt + 1}-{key[0]}-T{spk[0]}.wav",
-                )
-                soundfile.write(file1, outputs[0], sample_rate)
-                file2 = os.path.join(
-                    save_audio_dir,
-                    f"Utt{total_cnt + 1}-{key[1]}-T{spk[1]}.wav",
-                )
-                soundfile.write(file2, outputs[1], sample_rate)
+            min_len = min(ref.shape[-1], outputs.shape[-1], mix.shape[-1])
+            ref = ref[..., :min_len]
+            outputs = outputs[..., :min_len]
+            ests = outputs.numpy()
+            mix = mix[..., :min_len]
 
-            ref = targets.cpu().numpy()
-            ests = outputs
-            mix = features.cpu().numpy()
+            # Save and score every speaker-expanded TSE output in the batch.
+            for idx in range(len(ests)):
+                if sign_save_wav:
+                    file_path = os.path.join(
+                        save_audio_dir,
+                        f"Utt{total_cnt + 1}-{key[idx]}-T{spk[idx]}.wav",
+                    )
+                    output_to_save = outputs[idx]
+                    peak = output_to_save.abs().amax()
+                    if peak.item() > 1.0:
+                        output_to_save = (output_to_save /
+                                          peak.clamp_min(1e-8) * 0.9)
+                    soundfile.write(
+                        file_path,
+                        output_to_save.numpy(),
+                        sample_rate,
+                    )
 
-            if ests[0].size != ref[0].size:
-                end = min(ests[0].size, ref[0].size, mix[0].size)
-                ests_1 = ests[0][:end]
-                ref_1 = ref[0][:end]
-                mix_1 = mix[0][:end]
-                SISNR1, delta1 = cal_SISNRi(ests_1, ref_1, mix_1)
-            else:
-                SISNR1, delta1 = cal_SISNRi(ests[0], ref[0], mix[0])
+                sisnr, delta = cal_SISNRi(ests[idx], ref[idx], mix[idx])
+                logger.info(
+                    "Num={} | Utt={} | Target speaker={} | SI-SNR={:.2f} | SI-SNRi={:.2f}"
+                    .format(total_cnt + 1, key[idx], spk[idx], sisnr, delta))
+                total_SISNR += sisnr
+                total_SISNRi += delta
+                total_cnt += 1
+                if delta > 1:
+                    accept_cnt += 1
 
-            logger.info(
-                "Num={} | Utt={} | Target speaker={} | SI-SNR={:.2f} | SI-SNRi={:.2f}"
-                .format(total_cnt + 1, key[0], spk[0], SISNR1, delta1))
-            total_SISNR += SISNR1
-            total_SISNRi += delta1
-            total_cnt += 1
-            if delta1 > 1:
-                accept_cnt += 1
-
-            if ests[1].size != ref[1].size:
-                end = min(ests[1].size, ref[1].size, mix[1].size)
-                ests_2 = ests[1][:end]
-                ref_2 = ref[1][:end]
-                mix_2 = mix[1][:end]
-                SISNR2, delta2 = cal_SISNRi(ests_2, ref_2, mix_2)
-            else:
-                SISNR2, delta2 = cal_SISNRi(ests[1], ref[1], mix[1])
-            logger.info(
-                "Num={} | Utt={} | Target speaker={} | SI-SNR={:.2f} | SI-SNRi={:.2f}"
-                .format(total_cnt + 1, key[1], spk[1], SISNR2, delta2))
-            total_SISNR += SISNR2
-            total_SISNRi += delta2
-            total_cnt += 1
-            if delta2 > 1:
-                accept_cnt += 1
-
-            # if (i + 1) == test_iter:
-            #     break
         end = time.time()
     # generate the scp file of the enhanced speech for scoring
     if sign_save_wav:

@@ -2,59 +2,36 @@ import argparse
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description="")
+    """Parse direct-file and JSONL-manifest CLI arguments."""
+    parser = argparse.ArgumentParser(
+        description="Extract target speech from direct local inputs.")
     parser.add_argument(
-        "-t",
-        "--task",
-        choices=[
-            "extraction",
-        ],
-        default="extraction",
-        help="task type",
-    )
+        "--model-dir",
+        required=True,
+        help="Directory containing config.yaml and avg_model.pt.")
     parser.add_argument(
-        "-l",
-        "--language",
-        choices=[
-            # "chinese",
-            "english",
-        ],
-        default="english",
-        help="language type",
-    )
+        "--config",
+        help="Optional alternate config, for example a raw-cue config.")
+    parser.add_argument("--checkpoint", help="Optional checkpoint override.")
+    parser.add_argument("--device", default="cpu")
+
+    # A manifest contains one direct target-level request per JSON line.
+    parser.add_argument("--manifest", help="Direct-input JSONL manifest.")
+    parser.add_argument("--output-dir", default="extracted_speech")
+
+    # Single-request inputs use the same model-facing names as training.
+    parser.add_argument("--wav-mix")
+    parser.add_argument("--audio-aux")
+    parser.add_argument("--spatial-aux")
+    parser.add_argument("--visual-aux")
+    parser.add_argument("--textual-aux")
+    parser.add_argument("--output-file", default="extracted_speech.wav")
     parser.add_argument(
-        "--bsrnn",
-        action="store_true",
-        help="whether to use the bsrnn model",
-    )
-    parser.add_argument(
-        "-p", "--pretrain", type=str, default="", help="model directory"
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cpu",
-        help="device type (most commonly cpu or cuda,"
-        "but also potentially mps, xpu, xla or meta)"
-        "and optional device ordinal for the device type.",
-    )
-    parser.add_argument("--audio_file", help="mixture's audio file")
-    parser.add_argument("--audio_file2", help="enroll's audio file")
-    parser.add_argument(
-        "--resample_rate", type=int, default=16000, help="resampling rate"
-    )
-    parser.add_argument(
-        "--vad", action="store_true", help="whether to do VAD or not"
-    )
-    parser.add_argument(
-        "--output_file",
-        default='./extracted_speech.wav',
-        help="extracted speech saved in .wav"
-    )
-    parser.add_argument(
-        "--output_norm",
+        "--output-norm",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Control if normalize the output audio in .wav"
     )
     args = parser.parse_args()
+    if not args.manifest and not args.wav_mix:
+        parser.error("one of --manifest or --wav-mix is required")
     return args

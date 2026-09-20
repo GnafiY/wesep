@@ -1,0 +1,113 @@
+dataloader_args:
+  batch_size: 6
+  drop_last: true
+  num_workers: 6
+  pin_memory: true
+  prefetch_factor: 2
+
+dataset_args:
+  resample_rate: 16000
+  sample_num_per_epoch: 0
+  shuffle: true
+  shuffle_args:
+    shuffle_size: 2500
+  chunk_len: 48000
+  noise_prob: 0
+  cues:
+    audio:
+      use: true
+      required: true
+  cue_processing:
+    audio:
+      reverb_enroll_prob: 0
+      noise_enroll_prob: 0
+
+val_dataset_args:
+  collate:
+    wav_mix:
+      align: min
+    wav_target:
+      align: min
+
+enable_amp: false
+exp_dir: exp/SpExPlus
+gpus: [0]
+log_batch_interval: 100
+
+loss:
+  - type: SISDR
+    output: speech
+    target: wav_target
+    weight: 0.8
+    stages: [train, val]
+  - type: SISDR
+    output: speech_middle
+    target: wav_target
+    weight: 0.1
+    stages: [train, val]
+  - type: SISDR
+    output: speech_long
+    target: wav_target
+    weight: 0.1
+    stages: [train, val]
+  - type: CE
+    output: speaker_logits
+    target: speaker_label
+    weight: 0.5
+    stages: [train]
+
+model:
+  tse_model: TSE_SPEX_PLUS
+model_args:
+  tse_model:
+    separator:
+      enc_dim: 256
+      kernel_sizes: [20, 80, 160]
+      stride: 10
+      bottleneck_dim: 256
+      conv_dim: 512
+      conv_kernel_size: 3
+      num_blocks: 8
+      num_repeats: 4
+      causal: false  # false | true
+      skip_connection: false
+      mask_activation: relu  # relu | sigmoid
+    speaker:
+      features:
+        spex_plus:
+          enabled: true
+          input: waveform  # SpEx+ currently requires waveform enrollment.
+          embed_dim: 256
+model_init:
+  tse_model: null
+
+num_avg: 5
+num_epochs: 150
+clip_grad: 5.0
+save_epoch_interval: 1
+
+optimizer:
+  tse_model: Adam
+optimizer_args:
+  tse_model:
+    lr: 0.001
+    weight_decay: 0.0001
+
+scheduler:
+  tse_model:
+    warmup:
+      enabled: false
+      by: epoch
+      epochs: 0
+      start_factor: 0.0
+    name: PlateauHalf
+    interval: validation
+    args:
+      patience: 3
+      early_stop_patience: 7
+      factor: 0.5
+      min_delta: 0.0
+      min_lr: 2.5e-05
+      early_stop: true
+
+seed: 42

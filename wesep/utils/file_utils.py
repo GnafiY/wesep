@@ -3,9 +3,21 @@ import math
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+import json
+import yaml
 import kaldiio
 import numpy as np
 import soundfile
+
+
+def load_yaml(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def load_json(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def read_lists(list_file):
