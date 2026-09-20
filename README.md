@@ -175,7 +175,7 @@ Each training instance is defined as a mixture-target pair in `samples.jsonl`.
 Speaker, spatial, visual, and textual cues are maintained in modality-specific
 repositories and retrieved by speaker, mixture, or composite identifiers.
 
-<img src="resources/data_organization.png" width="800px">
+<img src="resources/data_organization.png" width="680px">
 
 ### Modular Top Model
 
@@ -183,7 +183,7 @@ A configuration instantiates the separator and cue frontends. Different cue
 features can be injected at the spectral, fusion, or separator-state level
 without redesigning the complete model.
 
-<img src="resources/top_model.png" width="700px">
+<img src="resources/top_model.png" width="600px">
 
 ## Data Pipeline
 
