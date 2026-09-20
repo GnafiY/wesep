@@ -34,5 +34,5 @@ def get_model(model_name: str):
         return getattr(module, class_name)
     except AttributeError as exc:
         raise ImportError(
-            f"Model class '{class_name}' not found in '{module_name}'"
+            f"Model class {class_name!r} not found in {module_name!r}"
         ) from exc

@@ -128,4 +128,4 @@ class DirectInputReader:
                 raise RuntimeError(f"Empty video: {path}")
             return video.permute(1, 2, 3, 0)  # [H, W, C, T]
 
-        raise ValueError(f"Unsupported file type for '{key}': {path}")
+        raise ValueError(f"Unsupported file type for {key!r}: {path}")

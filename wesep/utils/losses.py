@@ -55,7 +55,7 @@ class LossManager(nn.Module):
         for stage in ("train", "val"):
             if not self.has_stage(stage):
                 raise ValueError(
-                    f"at least one loss must include the '{stage}' stage")
+                    f"at least one loss must include the {stage!r} stage")
 
     def has_stage(self, stage):
         return any(stage in spec["stages"] for spec in self.specs)

@@ -96,7 +96,7 @@ def _standardize_source_sample(
     if isinstance(spk_ids, dict):
         spk_map = dict(spk_ids)
     else:
-        spk_map = {i: spk for i, spk in enumerate(spk_ids, start=1)}
+        spk_map = dict(enumerate(spk_ids, start=1))
     if not spk_map:
         raise RuntimeError(f"sample has no speaker ids: {key}")
 

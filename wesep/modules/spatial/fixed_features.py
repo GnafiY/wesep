@@ -23,13 +23,13 @@ class SpatialFeature(nn.Module):
         if spatial_aux is None:
             if required:
                 raise ValueError(
-                    f"Spatial feature requires the '{name}' input field.")
+                    f"Spatial feature requires the {name!r} input field.")
             return None
         index = self.field_index.get(name)
         if index is None or index >= spatial_aux.shape[1]:
             if required:
                 raise ValueError(
-                    f"Spatial feature requires the '{name}' input field.")
+                    f"Spatial feature requires the {name!r} input field.")
             return None
         return spatial_aux[:, index]
 

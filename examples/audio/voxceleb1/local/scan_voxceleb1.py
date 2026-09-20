@@ -45,8 +45,9 @@ def main():
             # wav_root/id10001/1zcIwhmdeo4/00001.wav
             try:
                 spk_id = wav_path.parts[-3]  # id10001
-            except IndexError:
-                raise RuntimeError(f"Unexpected path structure: {wav_path}")
+            except IndexError as exc:
+                raise RuntimeError(
+                    f"Unexpected path structure: {wav_path}") from exc
 
             # key: relative path without suffix
             # id10001/1zcIwhmdeo4/00001

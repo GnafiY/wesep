@@ -148,7 +148,7 @@ def build_collect_keys(cues_conf, train_conf, base_table):
         cue_cfg = cues_conf.get(cue_name)
         if cue_cfg is None:
             raise RuntimeError(
-                f"[collect_keys] Training requires cue '{cue_name}', "
+                f"[collect_keys] Training requires cue {cue_name!r}, "
                 f"but dataset cues.yaml does not provide it.")
 
         if cue_cfg.get("scope", "speaker") != "speaker":
@@ -156,7 +156,7 @@ def build_collect_keys(cues_conf, train_conf, base_table):
 
         if cue_name not in AUX_KEY_MAP:
             raise RuntimeError(
-                f"[collect_keys] Unknown cue modality '{cue_name}'. "
+                f"[collect_keys] Unknown cue modality {cue_name!r}. "
                 f"Known: {list(AUX_KEY_MAP.keys())}")
 
         aux_key = AUX_KEY_MAP[cue_name]
@@ -169,7 +169,7 @@ def build_collect_keys(cues_conf, train_conf, base_table):
         guaranteed = cue_cfg.get("guaranteed", True)
         if required and not guaranteed:
             raise RuntimeError(
-                f"[collect_keys] Training requires cue '{cue_name}' to be present "
+                f"[collect_keys] Training requires cue {cue_name!r} to be present "
                 f"in every sample, but dataset cues.yaml marks it as optional."
             )
 
@@ -237,7 +237,7 @@ def _fallback_tensor(ref_tensor, default_shape, fill_value, out_key):
         )
     if default_shape is None:
         raise RuntimeError(
-            f"[collate] Cannot infer fallback shape for '{out_key}': "
+            f"[collate] Cannot infer fallback shape for {out_key!r}: "
             "no real sample exists in batch and no default_shape is set.")
     return torch.full(tuple(default_shape), fill_value)
 
@@ -296,7 +296,7 @@ def tse_collate_fn(batch, collect_keys):
                     if out_key not in s:
                         if required:
                             raise RuntimeError(
-                                f"[collate] Missing required key '{out_key}' in sample: {s.get('key')}"
+                                f"[collate] Missing required key {out_key!r} in sample: {s.get('key')}"
                             )
                         v = None
                     else:
@@ -308,7 +308,7 @@ def tse_collate_fn(batch, collect_keys):
                         if k not in s:
                             if required:
                                 raise RuntimeError(
-                                    f"[collate] Missing required key '{k}' in sample: {s.get('key')}"
+                                    f"[collate] Missing required key {k!r} in sample: {s.get('key')}"
                                 )
                             v = None
                         else:
@@ -329,7 +329,7 @@ def tse_collate_fn(batch, collect_keys):
                 if out_key not in s:
                     if required:
                         raise RuntimeError(
-                            f"[collate] Missing required key '{out_key}' in sample: {s.get('key')}"
+                            f"[collate] Missing required key {out_key!r} in sample: {s.get('key')}"
                         )
                     x = None
                 else:
@@ -350,7 +350,7 @@ def tse_collate_fn(batch, collect_keys):
                     if k not in s:
                         if required:
                             raise RuntimeError(
-                                f"[collate] Missing required key '{k}' in sample: {s.get('key')}"
+                                f"[collate] Missing required key {k!r} in sample: {s.get('key')}"
                             )
                         x = None
                     else:
@@ -380,7 +380,7 @@ def tse_collate_fn(batch, collect_keys):
             else:
                 if default_shape is None:
                     raise RuntimeError(
-                        f"[collate] Cannot infer target length for '{out_key}': "
+                        f"[collate] Cannot infer target length for {out_key!r}: "
                         "no real sample exists in batch and no default_shape is set."
                     )
                 target_len = int(default_shape[-1])
@@ -391,7 +391,7 @@ def tse_collate_fn(batch, collect_keys):
             if x is None:
                 if required:
                     raise RuntimeError(
-                        f"[collate] Required feature '{out_key}' missing for batch sample {idx}"
+                        f"[collate] Required feature {out_key!r} missing for batch sample {idx}"
                     )
                 x = _fallback_tensor(ref_tensor, default_shape, fill_value,
                                      out_key)
