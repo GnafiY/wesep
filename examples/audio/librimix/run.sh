@@ -120,6 +120,11 @@ fi
 
 if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
   echo "Start scoring ..."
+  python "${WESEP_ROOT}/tools/build_tse_reference_scp.py" \
+    --samples "${data}/test/samples.jsonl" \
+    --output "${data}/test/single.wav.scp" \
+    --inference-scp "${exp_dir}/audio/spk1.scp" \
+    --check-source-files
   "${WESEP_ROOT}/tools/score.sh" --dset "${data}/test" \
     --exp_dir "${exp_dir}" \
     --fs ${fs} \

@@ -24,6 +24,20 @@ Install the lightweight text frontend before running Stage 1:
 pip install g2p_en
 ```
 
+Download the NLTK part-of-speech tagger required by `g2p_en`:
+```bash
+python -c "import nltk; nltk.download('averaged_perceptron_tagger')"
+```
+
+Verify that the resource is available:
+
+```bash
+python -c "import nltk; nltk.data.find('taggers/averaged_perceptron_tagger')"
+```
+
+The verification command succeeds silently when the tagger is installed. If it is
+missing, it raises a LookupError and exits with a non-zero status.
+
 ```bash
 ./run.sh --stage 0 --stop_stage 1 \
   --librimix_root /path/to/Libri2Mix \
@@ -47,3 +61,19 @@ Stages 0–6 download the text resources, prepare audio and keyword cue indexes,
 optionally create shards, train, average checkpoints, infer, and score. Data
 preparation and training are the validated v0.1 path; inference and scoring
 remain under release-wide validation.
+
+## Citation
+
+```bibtex
+@inproceedings{ijcai2026-haoyuli-daetse,
+  title     = {Detect, Attend and Extract: Keyword Guided Target Speaker Extraction},
+  author    = {Li, Haoyu and Xi, Yu and Jiang, Yidi and Wang, Shuai and Knill, Kate and Gales, Mark and Li, Haizhou and Yu, Kai},
+  booktitle = {Proceedings of the Thirty-Fifth International Joint Conference on
+               Artificial Intelligence, {IJCAI-26}},
+  pages     = {5784--5792},
+  year      = {2026},
+  note      = {Main Track},
+  doi       = {10.24963/ijcai.2026/644},
+  url       = {https://doi.org/10.24963/ijcai.2026/644},
+}
+```

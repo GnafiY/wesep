@@ -7,7 +7,6 @@ if [ -z "${WESEP_ROOT:-}" ]; then
 fi
 
 mix_data_path=
-librispeech_root=
 resource_dir=exp/kce
 data=data
 noise_type=clean
@@ -16,12 +15,12 @@ test_keyword_count=4
 
 . "${WESEP_ROOT}/tools/parse_options.sh" || exit 1
 
-if [ -z "${mix_data_path}" ] || [ -z "${librispeech_root}" ]; then
-  echo "--mix-data-path and --librispeech-root are required." >&2
+if [ -z "${mix_data_path}" ]; then
+  echo "--mix-data-path is required." >&2
   exit 1
 fi
-if [ ! -d "${mix_data_path}" ] || [ ! -d "${librispeech_root}" ]; then
-  echo "Libri2Mix or LibriSpeech data root does not exist." >&2
+if [ ! -d "${mix_data_path}" ]; then
+  echo "Libri2Mix data root does not exist: ${mix_data_path}" >&2
   exit 1
 fi
 if [[ ! "${test_keyword_count}" =~ ^[1-4]$ ]]; then
@@ -35,9 +34,10 @@ fi
 
 phoneme_map=${resource_dir}/phoneme2int.txt
 lexicon=${resource_dir}/word2lexicon.txt
-for path in "${phoneme_map}" "${lexicon}"; do
+transcript_nemo_jsonl=${resource_dir}/transcript_nemo/transcript_nemo.jsonl
+for path in "${phoneme_map}" "${lexicon}" "${transcript_nemo_jsonl}"; do
   if [ ! -f "${path}" ]; then
-    echo "DAE text resource not found: ${path}; run Stage 0 first." >&2
+    echo "DAE resource not found: ${path}; run Stage 0 first." >&2
     exit 1
   fi
 done
@@ -52,18 +52,20 @@ for split in train-100 dev test; do
   ln -sf samples.jsonl "${output_dir}/raw.list"
 done
 
-# Preserve complete word-aligned transcripts for random training selection.
+# Preserve complete NeMo ASR transcripts for random training selection.
 python local/dae_kce/build_transcript_cues.py \
   --samples "${data}/${noise_type}/train-100/samples.jsonl" \
-  --librispeech-root "${librispeech_root}" \
+  --subset train-100 \
+  --transcript-nemo-jsonl "${transcript_nemo_jsonl}" \
   --phoneme-map "${phoneme_map}" \
   --lexicon "${lexicon}" \
   --output "${data}/${noise_type}/train-100/cues/textual.json"
 
-# Validation uses one deterministic keyword selection across all epochs.
+# Validation uses one deterministic NeMo keyword selection across all epochs.
 python local/dae_kce/build_transcript_cues.py \
   --samples "${data}/${noise_type}/dev/samples.jsonl" \
-  --librispeech-root "${librispeech_root}" \
+  --subset dev \
+  --transcript-nemo-jsonl "${transcript_nemo_jsonl}" \
   --phoneme-map "${phoneme_map}" \
   --lexicon "${lexicon}" \
   --fixed-words "${dev_keyword_count}" \

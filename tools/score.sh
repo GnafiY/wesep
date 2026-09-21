@@ -26,7 +26,7 @@ fs=16k
 scoring_protocol="STOI SDR SAR SIR SI_SNR"
 
 # Parse command line options
-. tools/parse_options.sh || exit 1
+. ${WESEP_ROOT}/tools/parse_options.sh || exit 1
 
 if [ ! ${fs} = 16k ] && ${use_dnsmos}; then
     echo "Warning: DNSMOS only supports 16k sampling rate."
@@ -89,7 +89,7 @@ for n in $(seq "${_nj}"); do
     split_scps+=" ${_logdir}/keys.${n}.scp"
 done
 # shellcheck disable=SC2086
-./tools/split_scp.pl "${key_file}" ${split_scps}
+${WESEP_ROOT}/tools/split_scp.pl "${key_file}" ${split_scps}
 
 _ref_scp="--ref_scp ${dset}/single.wav.scp "
 _inf_scp="--inf_scp ${exp_dir}/audio/spk1.scp "
@@ -97,9 +97,9 @@ _inf_scp="--inf_scp ${exp_dir}/audio/spk1.scp "
 # 2. Submit scoring jobs
 echo "log: '${_logdir}/tse_scoring.*.log'"
 if ${use_dnsmos} && ${dnsmos_use_gpu}; then
-    cmd="./tools/run.pl --gpu ${n_gpu}"
+    cmd="${WESEP_ROOT}/tools/run.pl --gpu ${n_gpu}"
 else
-    cmd="./tools/run.pl"
+    cmd="${WESEP_ROOT}/tools/run.pl"
 fi
 # shellcheck disable=SC2086
 ${cmd} JOB=1:"${_nj}" "${_logdir}"/tse_scoring.JOB.log \
@@ -145,5 +145,5 @@ for protocol in ${scoring_protocol}; do
 done
 
 # show the result
-./tools/show_enh_score.sh "${_dir}/../.." > \
+${WESEP_ROOT}/tools/show_enh_score.sh "${_dir}/../.." > \
     "${_dir}/../../RESULTS.md"
