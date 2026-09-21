@@ -38,7 +38,7 @@ model_args:
       sr: *sr
       win: 512
       stride: 128
-      feature_dim: 128
+      feature_dim: &feature_dim 128
       num_repeat: 6
       causal: false
       nspk: 1
@@ -54,8 +54,8 @@ model_args:
             phoneme_map: ./exp/kce/phoneme2int.txt
             lexicon: ./exp/kce/word2lexicon.txt
           adapter:
-            output_dim: 128
-            num_layers: 1
+            output_dim: *feature_dim
+            num_layers: 3
           fusion: FiLM  # additive | concat | multiply | FiLM
           multi_fuse: true
           # Download from https://huggingface.co/GnafiY/DAE-TSE and keep

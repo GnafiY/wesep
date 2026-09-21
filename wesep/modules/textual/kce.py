@@ -547,6 +547,7 @@ class KCE(nn.Module):
         self.fallback_reported = False
         model_config = config.get("model_config")
         fbank_config = config.get("fbank")
+        eps = config.get("eps", torch.finfo(torch.float32).eps)  # Add eps to avoid NaN in fbank
 
         # Read available sidecars even when loading the external weights later.
         if self.pretrained:
@@ -573,12 +574,21 @@ class KCE(nn.Module):
         adapter = config.get("adapter", {})
         input_dim = adapter.get("input_dim", backbone_dim)
         self.output_dim = adapter.get("output_dim", 128)
-        layers = [
-            nn.Linear(input_dim, input_dim)
+        """
+            key fix: add layer norm after linear layer to stabilize training
+            During official training, norm of projected embedding stays stable; yet abnormal training
+            appears frequently during migration.
+        """
+        hidden_layers = [
+            layer
             for _ in range(adapter.get("num_layers", 1) - 1)
+            for layer in (nn.Linear(input_dim, input_dim), nn.LayerNorm(input_dim, eps=eps))
         ]
-        layers.append(nn.Linear(input_dim, self.output_dim))
-        self.adapter = nn.Sequential(*layers)
+        self.adapter = nn.Sequential(
+            *hidden_layers,
+            nn.Linear(input_dim, self.output_dim),
+            nn.LayerNorm(self.output_dim, eps=eps),
+        )
 
         self.padding_id = config.get("padding_id", 0)
         self.bos_id = config.get("bos_id", 71)

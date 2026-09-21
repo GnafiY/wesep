@@ -11,6 +11,7 @@ output_dir=exp/kce
 . "${WESEP_ROOT}/tools/parse_options.sh" || exit 1
 
 mkdir -p "${output_dir}/testset"
+mkdir -p "${output_dir}/transcript_nemo"
 
 # Download one immutable input only when it is absent locally.
 download_if_missing() {
@@ -38,3 +39,10 @@ for count in 1 2 3 4; do
     "${github_root}/testset/kw-${count}_seed-42.jsonl" \
     "${output_dir}/testset/kw-${count}_seed-42.jsonl"
 done
+
+# NeMo source transcriptions supply the text for train-100 and dev cue
+# construction. Keep this download with the other immutable recipe inputs;
+# Stage 1 must not access the network.
+download_if_missing \
+  "https://huggingface.co/GnafiY/DAE-TSE/resolve/main/transcript_nemo/transcript_nemo.jsonl" \
+  "${output_dir}/transcript_nemo/transcript_nemo.jsonl"
