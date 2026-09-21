@@ -24,6 +24,20 @@ Install the lightweight text frontend before running Stage 1:
 pip install g2p_en
 ```
 
+Download the NLTK part-of-speech tagger required by `g2p_en`:
+```bash
+python -c "import nltk; nltk.download('averaged_perceptron_tagger')"
+```
+
+Verify that the resource is available:
+
+```bash
+python -c "import nltk; nltk.data.find('taggers/averaged_perceptron_tagger')"
+```
+
+The verification command succeeds silently when the tagger is installed. If it is
+missing, it raises a LookupError and exits with a non-zero status.
+
 ```bash
 ./run.sh --stage 0 --stop_stage 1 \
   --librimix_root /path/to/Libri2Mix \

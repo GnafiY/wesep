@@ -67,9 +67,11 @@ Then install the WeSep dependencies. The speaker-cue models also require
 WeSpeaker, which is installed from its official repository:
 
 ```sh
-pip install -r requirements.txt
 pip install git+https://github.com/wenet-e2e/wespeaker.git
+pip install -r requirements.txt
 ```
+Install WeSpeaker first, then re-install the pinned WeSep requirements
+so the environment returns to the dependency versions validated by this project.
 
 Keep all three PyTorch packages on the matching release line. Recipe-specific
 external dependencies are installed only when needed:
