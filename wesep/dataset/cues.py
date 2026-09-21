@@ -1,6 +1,9 @@
 # Copyright (c) 2026 Ke Zhang (kylezhang1118@gmail.com)
+#               2026 Haoyu Li (haoyu.li.cs@sjtu.edu.cn)
 #
 # SPDX-License-Identifier: Apache-2.0
+
+import os
 
 from wesep.dataset import (
     processor_speaker,
@@ -52,6 +55,61 @@ def build_cue_layer(dataset, cues_yaml, state, configs):
 
 
 CUE_BUILDERS = {}
+
+
+def _resolve_config_path(value, field_name):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty path string")
+    resolved = os.path.expanduser(os.path.expandvars(value))
+    if "$" in resolved:
+        raise ValueError(
+            f"{field_name} references an unset environment variable: {value}")
+    return resolved
+
+
+def _validate_textual_selection(selection):
+    if not isinstance(selection, dict):
+        raise ValueError("DAE keyword textual cue requires a 'selection' mapping.")
+    selection_type = selection.get("type")
+    if selection_type not in {"random", "fixed"}:
+        raise ValueError(
+            "DAE keyword textual selection type must be 'random' or 'fixed'")
+
+    chunk_aware = selection.get("chunk_aware")
+    if chunk_aware is None:
+        return selection
+    if not isinstance(chunk_aware, dict):
+        raise ValueError("selection.chunk_aware must be a mapping")
+    if not isinstance(chunk_aware.get("enabled", False), bool):
+        raise ValueError("selection.chunk_aware.enabled must be boolean")
+    if not chunk_aware.get("enabled", False):
+        return selection
+    if selection_type != "random":
+        raise ValueError(
+            "Chunk-aware textual keyword selection requires type='random'")
+
+    normalized_chunk_aware = dict(chunk_aware)
+    for key in ("alignment_path", "word2lexicon_path"):
+        normalized_chunk_aware[key] = _resolve_config_path(
+            normalized_chunk_aware.get(key), f"selection.chunk_aware.{key}")
+    fallback = normalized_chunk_aware.get("fallback_alignment_path")
+    if fallback is not None:
+        normalized_chunk_aware["fallback_alignment_path"] = _resolve_config_path(
+            fallback, "selection.chunk_aware.fallback_alignment_path")
+    if normalized_chunk_aware.get("no_word_policy") not in {"discard", "error"}:
+        raise ValueError(
+            "selection.chunk_aware.no_word_policy must be 'discard' or 'error'")
+    tolerance = normalized_chunk_aware.get("tolerance", 1e-4)
+    if not isinstance(tolerance, (int, float)) or tolerance < 0:
+        raise ValueError(
+            "selection.chunk_aware.tolerance must be a non-negative number")
+    normalized_chunk_aware["tolerance"] = float(tolerance)
+
+    normalized_selection = dict(selection)
+    normalized_selection["chunk_aware"] = normalized_chunk_aware
+    return normalized_selection
 
 
 def register_cue(name):
@@ -201,11 +259,8 @@ def build_textual_cue(dataset, cue_name, cue_conf, state, configs):
     # Keep representation-specific options outside the textual cue contract.
     format_args = {}
     if cue_format == ("json", "dae_keyword_phoneme"):
-        selection = cue_conf.get("selection")
-        if not isinstance(selection, dict):
-            raise ValueError(
-                "DAE keyword textual cue requires a 'selection' mapping.")
-        format_args["selection"] = selection
+        format_args["selection"] = _validate_textual_selection(
+            cue_conf.get("selection"))
 
     return dataset.apply(
         processor_textual.sample_textual_cue,

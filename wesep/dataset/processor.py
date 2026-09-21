@@ -402,13 +402,18 @@ def parse_raw(data, source_len_policy="strict"):
             continue
 
         # Standardization errors describe a dataset contract violation.
-        yield _standardize_source_sample(
+        standardized = _standardize_source_sample(
             key,
             spk_ids,
             mix_items,
             src_items,
             source_len_policy,
         )
+        # Keep DataList's process identity for per-rank/worker diagnostics.
+        for metadata_key in ("rank", "world_size", "worker_id", "num_workers"):
+            if metadata_key in sample:
+                standardized[metadata_key] = sample[metadata_key]
+        yield standardized
 
 
 def expand_target_samples(data):
@@ -865,7 +870,10 @@ def get_random_chunk(data_list,
         raise ValueError("Input tensors must have non-zero time length")
     assert all(d.size(-1) == T for d in data_list)
 
-    # Random/fixed crop if possible.
+    # Random/fixed crop if possible. Keep retry behavior unchanged while
+    # recording enough exact metadata for textual chunk selection and audits.
+    zero_retry_count = 0
+    zero_retry_exhausted = False
     if T >= chunk_len:
         if random_start:
             chunk_start = random.randint(0, T - chunk_len)
@@ -876,10 +884,12 @@ def get_random_chunk(data_list,
                                                      chunk_len]
                     if not torch.all(mix_chunk == 0):
                         break
+                    zero_retry_count += 1
                     chunk_start = random.randint(0, T - chunk_len)
                 mix_chunk = data_list[mix_index][..., chunk_start:chunk_start +
                                                  chunk_len]
                 if torch.all(mix_chunk == 0):
+                    zero_retry_exhausted = True
                     logging.warning(
                         "Selected all-zero mixture chunk after %d retries.",
                         max_zero_retry,
@@ -893,10 +903,17 @@ def get_random_chunk(data_list,
             out.append(chunk.clone())
 
         meta = {
+            # ``chunk_ratio`` remains backwards compatible; exact sample
+            # positions are consumed by chunk-aware textual cue selection.
             "start_ratio": chunk_start / T,
             "end_ratio": (chunk_start + chunk_len) / T,
             "orig_len": T,
             "chunk_len": chunk_len,
+            "chunk_start": chunk_start,
+            "chunk_end": chunk_start + chunk_len,
+            "valid_length": chunk_len,
+            "zero_retry_count": zero_retry_count,
+            "zero_retry_exhausted": zero_retry_exhausted,
         }
         return out, meta
 
@@ -907,6 +924,11 @@ def get_random_chunk(data_list,
             "end_ratio": 1.0,
             "orig_len": T,
             "chunk_len": T,
+            "chunk_start": 0,
+            "chunk_end": T,
+            "valid_length": T,
+            "zero_retry_count": 0,
+            "zero_retry_exhausted": False,
         }
 
     # Pad short utterances with zeros.
@@ -922,6 +944,12 @@ def get_random_chunk(data_list,
         "end_ratio": chunk_len / T,  # > 1.0, indicating padded context
         "orig_len": T,
         "chunk_len": chunk_len,
+        "chunk_start": 0,
+        # Exclude right-side silence padding from alignment and optional SI loss.
+        "chunk_end": T,
+        "valid_length": T,
+        "zero_retry_count": 0,
+        "zero_retry_exhausted": False,
     }
 
     return out, meta
@@ -999,7 +1027,15 @@ def random_chunk(data, chunk_len, random_start=True, short_policy="pad"):
             mix_index=mix_index,
         )
         sample.update(zip(wav_keys, wav_data_list))
-        sample["chunk_ratio"] = ratio
+        # Keep the legacy ratio mapping stable for existing cue processors.
+        sample["chunk_ratio"] = {
+            key: ratio[key]
+            for key in ("start_ratio", "end_ratio", "orig_len", "chunk_len")
+        }
+        for key in (
+                "chunk_start", "chunk_end", "valid_length",
+                "zero_retry_count", "zero_retry_exhausted"):
+            sample[key] = ratio[key]
         yield sample
 
 

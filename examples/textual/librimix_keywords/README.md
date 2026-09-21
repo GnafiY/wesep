@@ -9,11 +9,12 @@ resources at https://github.com/GnafiY/DAE-TSE.
 ## Data preparation
 
 Stage 0 downloads the frozen KCE checkpoint, its model configuration, the
-checkpoint-compatible phoneme map and lexicon, and the official one- to
-four-keyword Libri2Mix test manifests.
+checkpoint-compatible phoneme map and lexicon, the official one- to four-keyword
+Libri2Mix test manifests, and the primary plus corrected fallback LibriSpeech
+alignment archives used by optional static chunk training.
 
-Stage 1 expects an existing `Libri2Mix/wav16k/min` tree and the corresponding
-LibriSpeech transcripts. It generates standard WeSep `samples.jsonl` files,
+Stage 1 expects an existing `Libri2Mix/wav16k/min` tree. It generates standard
+WeSep `samples.jsonl` files,
 word-aligned phoneme cue indexes, and explicit `cues.yaml` files. Training cues
 retain the complete transcript so the DAE processor can select two to six
 contiguous words. Development and test cues use fixed keyword positions.
@@ -26,8 +27,7 @@ pip install g2p_en
 
 ```bash
 ./run.sh --stage 0 --stop_stage 1 \
-  --librimix_root /path/to/Libri2Mix \
-  --librispeech_root /path/to/LibriSpeech
+  --librimix_root /path/to/Libri2Mix
 ```
 
 Set `--test_keyword_count` to `1`, `2`, `3`, or `4` to choose the corresponding
@@ -40,6 +40,12 @@ and direct text inference use `DAEPhonemeTokenizer` from
 
 The official configuration uses `batch_size: 1` and `whole_utt: true`, matching
 the full-context KCE training setup.
+
+For static chunk training, rebuild Stage 1 with `--chunk_aware true`. It adds
+complete-word selection from the primary and corrected fallback archives only to
+`train-100/cues.yaml`; dev and test remain whole-utterance. The required
+150-epoch simulation supports `no_word_policy: discard` for 6-second chunks:
+45 of 2,085,000 mixture draws (0.002%) were discarded.
 
 ## Stages
 

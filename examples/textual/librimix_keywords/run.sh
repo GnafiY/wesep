@@ -19,6 +19,7 @@ data=data
 noise_type=clean
 dev_keyword_count=4
 test_keyword_count=4 # Official DAE test condition: 1, 2, 3, or 4 words
+chunk_aware=false # Generate alignment-aware random training cues in Stage 1
 
 # Training data format
 data_type=raw # shard/raw
@@ -63,7 +64,8 @@ if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     --data "${data}" \
     --noise-type "${noise_type}" \
     --dev-keyword-count "${dev_keyword_count}" \
-    --test-keyword-count "${test_keyword_count}"
+    --test-keyword-count "${test_keyword_count}" \
+    --chunk-aware "${chunk_aware}"
 fi
 
 data=${data}/${noise_type}

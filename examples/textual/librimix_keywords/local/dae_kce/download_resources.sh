@@ -12,12 +12,14 @@ output_dir=exp/kce
 
 mkdir -p "${output_dir}/testset"
 mkdir -p "${output_dir}/transcript_nemo"
+mkdir -p "${output_dir}/alignments"
 
-# Download one immutable input only when it is absent locally.
+# Download one immutable input when it is absent or an earlier download is empty.
 download_if_missing() {
   local url=$1
   local output=$2
-  if [ ! -f "${output}" ]; then
+  if [ ! -s "${output}" ]; then
+    rm -f "${output}"
     wget -O "${output}" "${url}"
   fi
 }
@@ -45,3 +47,10 @@ done
 download_if_missing \
   "https://huggingface.co/GnafiY/DAE-TSE/resolve/main/transcript_nemo/transcript_nemo.jsonl" \
   "${output_dir}/transcript_nemo/transcript_nemo.jsonl"
+
+# Chunk-aware textual training reads these archives directly. The primary
+# resource is the official alignment set; the corrected Qwen3 fallback covers
+# utterances that the primary forced aligner did not contain.
+alignment_root=https://huggingface.co/GnafiY/DAE-TSE/resolve/main/LibriSpeech-Alignments
+download_if_missing   "${alignment_root}/LibriSpeech-Alignments.zip"   "${output_dir}/alignments/LibriSpeech-Alignments.zip"
+download_if_missing   "${alignment_root}/LibriSpeech-Alignments-Aligned-by-Qwen3-Aligner.zip"   "${output_dir}/alignments/LibriSpeech-Alignments-Aligned-by-Qwen3-Aligner.zip"

@@ -12,6 +12,7 @@ data=data
 noise_type=clean
 dev_keyword_count=4
 test_keyword_count=4
+chunk_aware=false
 
 . "${WESEP_ROOT}/tools/parse_options.sh" || exit 1
 
@@ -31,6 +32,10 @@ if [[ ! "${dev_keyword_count}" =~ ^[1-9][0-9]*$ ]]; then
   echo "--dev-keyword-count must be a positive integer." >&2
   exit 1
 fi
+if [[ "${chunk_aware}" != true && "${chunk_aware}" != false ]]; then
+  echo "--chunk-aware must be true or false." >&2
+  exit 1
+fi
 
 phoneme_map=${resource_dir}/phoneme2int.txt
 lexicon=${resource_dir}/word2lexicon.txt
@@ -41,6 +46,17 @@ for path in "${phoneme_map}" "${lexicon}" "${transcript_nemo_jsonl}"; do
     exit 1
   fi
 done
+
+primary_alignment=${resource_dir}/alignments/LibriSpeech-Alignments.zip
+fallback_alignment=${resource_dir}/alignments/LibriSpeech-Alignments-Aligned-by-Qwen3-Aligner.zip
+if [[ "${chunk_aware}" == true ]]; then
+  for path in "${primary_alignment}" "${fallback_alignment}"; do
+    if [ ! -s "${path}" ]; then
+      echo "Chunk alignment resource not found or empty: ${path}; run Stage 0 first." >&2
+      exit 1
+    fi
+  done
+fi
 
 # Build standard WeSep audio indexes directly from Libri2Mix.
 for split in train-100 dev test; do
@@ -102,6 +118,19 @@ cues:
     selection:
       type: random
       word_range: [2, 6]
+EOF
+if [[ "${chunk_aware}" == true ]]; then
+  cat >> "${data}/${noise_type}/train-100/cues.yaml" <<EOF
+      chunk_aware:
+        enabled: true
+        alignment_path: ${primary_alignment}
+        fallback_alignment_path: ${fallback_alignment}
+        word2lexicon_path: ${lexicon}
+        tolerance: 0.0001
+        no_word_policy: discard
+EOF
+fi
+cat >> "${data}/${noise_type}/train-100/cues.yaml" <<EOF
     collate:
       fill_value: 0
       emit_present: false
