@@ -186,7 +186,11 @@ def train(config="conf/config.yaml", **kwargs):
         "weight": 1.0,
         "stages": ["train", "val"],
     }]
-    loss_manager = LossManager(loss_conf).to(device)
+    loss_manager = LossManager(
+        loss_conf,
+        use_valid_length_for_sisnr_loss=configs.get(
+            "use_valid_length_for_sisnr_loss", False),
+    ).to(device)
 
     if rank == 0:
         logger.info("<== TSE Model Loss ==>")

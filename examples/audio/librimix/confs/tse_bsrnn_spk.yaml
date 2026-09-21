@@ -11,6 +11,11 @@ dataset_args:
   shuffle: true
   shuffle_args:
     shuffle_size: 2500
+  # Chunk-training options (set explicitly in an experiment config):
+  # whole_utt: false
+  # chunk_len: 96000              # 6 seconds at 16 kHz
+  # chunk_short_policy: pad       # right-pad with silence
+  # use_valid_length_for_sisnr_loss: true
   chunk_len: 48000
   noise_prob: 0 # prob to add noise aug per sample
   noise_lmdb_file: './data/musan/lmdb'

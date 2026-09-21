@@ -271,6 +271,19 @@ def tse_collate_fn(batch, collect_keys):
 
     new_batch = {}
 
+    # Mixture-level valid lengths expand once per target speaker. Whole-utterance
+    # samples have no chunk metadata and therefore use their full waveform.
+    valid_lengths = []
+    for sample, num_speaker in zip(batch, num_speakers):
+        valid_length = int(sample.get("valid_length", sample["wav_mix"].shape[-1]))
+        if valid_length <= 0 or valid_length > sample["wav_mix"].shape[-1]:
+            raise ValueError(
+                f"[collate] Invalid valid_length={valid_length} for "
+                f"sample {sample.get('key')} with waveform length "
+                f"{sample['wav_mix'].shape[-1]}")
+        valid_lengths.extend([valid_length] * num_speaker)
+    new_batch["valid_lengths"] = torch.as_tensor(valid_lengths, dtype=torch.long)
+
     # ---- 2) Collect each registered output field ----
     for out_key, spec in collect_keys.items():
         key_tpl = spec.get("key_tpl", None)
