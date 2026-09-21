@@ -47,3 +47,19 @@ Stages 0–6 download the text resources, prepare audio and keyword cue indexes,
 optionally create shards, train, average checkpoints, infer, and score. Data
 preparation and training are the validated v0.1 path; inference and scoring
 remain under release-wide validation.
+
+## Citation
+
+```bibtex
+@inproceedings{ijcai2026-haoyuli-daetse,
+  title     = {Detect, Attend and Extract: Keyword Guided Target Speaker Extraction},
+  author    = {Li, Haoyu and Xi, Yu and Jiang, Yidi and Wang, Shuai and Knill, Kate and Gales, Mark and Li, Haizhou and Yu, Kai},
+  booktitle = {Proceedings of the Thirty-Fifth International Joint Conference on
+               Artificial Intelligence, {IJCAI-26}},
+  pages     = {5784--5792},
+  year      = {2026},
+  note      = {Main Track},
+  doi       = {10.24963/ijcai.2026/644},
+  url       = {https://doi.org/10.24963/ijcai.2026/644},
+}
+```

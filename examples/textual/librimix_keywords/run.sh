@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 # Copyright 2026 Ke Zhang (kylezhang1118@gmail.com)
+#           2026 Haoyu Li (haoyu.li.cs@sjtu.edu.cn)
 
 set -euo pipefail
 . ./path.sh || exit 1
@@ -160,7 +161,7 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
         --test_cues "${data}/test/cues.yaml" \
         --test_samples "${data}/test/samples.jsonl" \
         --save_wav "${save_results}" \
-        --write_enhanced_scp false --infer_log "infer.${i}.log" \
+        --write_enhanced_scp false \
         ${checkpoint:+--checkpoint "$checkpoint"} &
       pids+=("$!")
     done
@@ -170,13 +171,6 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
     done
     trap - INT TERM
 
-    merge_args=()
-    for i in "${!infer_gpus[@]}"; do
-      merge_args+=(--log "${exp_dir}/infer.${i}.log")
-    done
-    python local/merge_log.py "${merge_args[@]}" \
-      --output "${exp_dir}/infer.merged.log"
-
     if [[ "${save_results}" == "true" ]]; then
       python -c "from wesep.utils.utils import generate_enahnced_scp; generate_enahnced_scp(r'${exp_dir}/audio', extension='wav')"
     fi
@@ -185,6 +179,11 @@ fi
 
 if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
   echo "Stage 6: Score"
+  python "${WESEP_ROOT}/tools/build_tse_reference_scp.py" \
+    --samples "${data}/test/samples.jsonl" \
+    --output "${data}/test/single.wav.scp" \
+    --inference-scp "${exp_dir}/audio/spk1.scp" \
+    --check-source-files
   "${WESEP_ROOT}/tools/score.sh" \
     --dset "${data}/test" \
     --exp_dir "${exp_dir}" \

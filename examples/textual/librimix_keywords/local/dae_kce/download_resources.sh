@@ -40,9 +40,8 @@ for count in 1 2 3 4; do
     "${output_dir}/testset/kw-${count}_seed-42.jsonl"
 done
 
-# NeMo source transcriptions supply the text for train-100 and dev cue
-# construction. Keep this download with the other immutable recipe inputs;
-# Stage 1 must not access the network.
+# NeMo source transcriptions supply the text for train-100 and dev cue construction.
+# NeMo model: https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_en_fastconformer_hybrid_large_pc/versions/1.18.0/files/stt_en_fastconformer_hybrid_large_pc.nemo
 download_if_missing \
   "https://huggingface.co/GnafiY/DAE-TSE/resolve/main/transcript_nemo/transcript_nemo.jsonl" \
   "${output_dir}/transcript_nemo/transcript_nemo.jsonl"

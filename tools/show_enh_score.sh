@@ -2,7 +2,7 @@
 mindepth=0
 maxdepth=1
 
-. tools/parse_options.sh
+. ${WESEP_ROOT}/tools/parse_options.sh
 
 if [ $# -gt 1 ]; then
     echo "Usage: $0 --mindepth 0 --maxdepth 1 [exp]" 1>&2
