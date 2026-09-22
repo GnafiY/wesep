@@ -26,6 +26,7 @@ soundfile==0.12.1
 tableprint==0.9.1
 thop==0.1.1.post2209072238
 tqdm==4.64.0
+setuptools==80.10.2
 
 # Development and code-quality tools
 flake8==3.8.2
