@@ -24,7 +24,7 @@ import random
 import numpy as np
 import soundfile as sf
 
-from wesep.dataset.textual_alignment import (
+from wesep.dataset.processor_textual import (
     AlignmentNotFoundError,
     LibriSpeechAlignmentReader,
     load_word_to_phone_ids,
@@ -38,8 +38,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=Path, required=True)
     parser.add_argument("--textual-resource", type=Path, required=True)
-    parser.add_argument("--primary-alignment-path", type=Path, required=True)
-    parser.add_argument("--fallback-alignment-path", type=Path)
+    parser.add_argument("--alignment-path", type=Path, required=True)
     parser.add_argument("--word2lexicon-path", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--chunk-seconds", nargs="+", type=float,
@@ -75,9 +74,8 @@ def _load_samples(path):
     return samples
 
 
-def _init_worker(primary_path, fallback_path, lexicon_path, resource_path):
-    _WORKER_STATE["reader"] = LibriSpeechAlignmentReader(
-        primary_path, fallback_path)
+def _init_worker(alignment_path, lexicon_path, resource_path):
+    _WORKER_STATE["reader"] = LibriSpeechAlignmentReader(alignment_path)
     _WORKER_STATE["lexicon"] = load_word_to_phone_ids(lexicon_path)
     with Path(resource_path).open(encoding="utf-8") as stream:
         _WORKER_STATE["textual_resource"] = json.load(stream)
@@ -122,7 +120,7 @@ def _alignment_for_utterance(utterance_id):
         lookup = reader.get_words(utterance_id)
         return lookup, None
     except AlignmentNotFoundError:
-        return None, "missing_primary_and_fallback_alignment"
+        return None, "missing_alignment"
 
 
 def _failure_row(sample, speaker_slot, utterance_id, chunk, chunk_seconds,
@@ -168,7 +166,7 @@ def _simulate_one(sample_index_and_sample, chunk_seconds, epochs, seed,
     textual_resource = _WORKER_STATE["textual_resource"]
     lexicon = _WORKER_STATE["lexicon"]
 
-    # Cache archive lookups once per source utterance; crops differ per draw.
+    # Cache directory lookups once per source utterance; crops differ per draw.
     alignment_data = {
         utterance_id: _alignment_for_utterance(utterance_id)
         for utterance_id in utterances
@@ -208,17 +206,14 @@ def _simulate_one(sample_index_and_sample, chunk_seconds, epochs, seed,
 
             lookup, alignment_error = alignment_data[utterance_id]
             if alignment_error is not None:
-                stats["missing_primary_alignment"] += 1
-                stats["missing_fallback_alignment"] += 1
+                stats["missing_alignment"] += 1
                 rows.append(_failure_row(
                     sample, speaker_slot, utterance_id, chunk, chunk_seconds,
                     epoch, alignment_error))
                 discard_mixture = True
                 continue
 
-            stats[f"alignment_{lookup.source}_used"] += 1
-            if not lookup.primary_available:
-                stats["missing_primary_alignment"] += 1
+            stats["aligned_target_speakers"] += 1
 
             complete_words = [
                 word for word in lookup.words
@@ -229,7 +224,7 @@ def _simulate_one(sample_index_and_sample, chunk_seconds, epochs, seed,
                 stats["no_complete_aligned_word"] += 1
                 rows.append(_failure_row(
                     sample, speaker_slot, utterance_id, chunk, chunk_seconds,
-                    epoch, "no_complete_aligned_word", lookup.source))
+                    epoch, "no_complete_aligned_word"))
                 discard_mixture = True
                 continue
             missing_word = next(
@@ -239,7 +234,7 @@ def _simulate_one(sample_index_and_sample, chunk_seconds, epochs, seed,
                 stats["missing_lexicon_entry"] += 1
                 rows.append(_failure_row(
                     sample, speaker_slot, utterance_id, chunk, chunk_seconds,
-                    epoch, f"missing_lexicon:{missing_word}", lookup.source))
+                    epoch, f"missing_lexicon:{missing_word}"))
                 discard_mixture = True
 
         if discard_mixture:
@@ -266,20 +261,18 @@ def _write_summary_markdown(output_path, summary, args):
         f"- samples: `{args.samples}`",
         f"- virtual epochs: `{args.epochs}`",
         f"- seed: `{args.seed}`",
-        f"- primary alignment: `{args.primary_alignment_path}`",
-        f"- fallback alignment: `{args.fallback_alignment_path}`",
+        f"- merged alignment: `{args.alignment_path}`",
         "",
         "| Chunk | Mixture draws | Target draws | Discarded mixtures | "
-        "Discard rate | No complete word | Missing primary | Missing fallback | "
-        "Fallback used | Zero retries | Exhausted zero retries |",
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "Discard rate | No complete word | Missing alignment | "
+        "Zero retries | Exhausted zero retries |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for chunk_key, stats in summary["by_chunk_seconds"].items():
         mixture_draws = stats["mixture_draws"]
         lines.append(
             "| {chunk} | {mix} | {target} | {discarded} | {rate} | {no_word} | "
-            "{missing_primary} | {missing_fallback} | {fallback} | {retries} | "
-            "{exhausted} |".format(
+            "{missing_alignment} | {retries} | {exhausted} |".format(
                 chunk=chunk_key,
                 mix=mixture_draws,
                 target=stats["target_speaker_draws"],
@@ -287,9 +280,7 @@ def _write_summary_markdown(output_path, summary, args):
                 rate=_format_percentage(stats["discarded_mixture_draws"],
                                         mixture_draws),
                 no_word=stats["no_complete_aligned_word"],
-                missing_primary=stats["missing_primary_alignment"],
-                missing_fallback=stats["missing_fallback_alignment"],
-                fallback=stats["alignment_fallback_used"],
+                missing_alignment=stats["missing_alignment"],
                 retries=stats["all_zero_mixture_crop_retries"],
                 exhausted=stats["all_zero_mixture_crop_retry_exhausted"],
             ))
@@ -311,11 +302,9 @@ def main():
     if any(seconds <= 0 for seconds in args.chunk_seconds):
         raise ValueError("--chunk-seconds values must be positive")
     for path in (args.samples, args.textual_resource,
-                 args.primary_alignment_path, args.word2lexicon_path):
+                 args.alignment_path, args.word2lexicon_path):
         if not path.exists():
             raise FileNotFoundError(path)
-    if args.fallback_alignment_path and not args.fallback_alignment_path.exists():
-        raise FileNotFoundError(args.fallback_alignment_path)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     detailed_path = args.output_dir / "detailed.jsonl"
@@ -329,8 +318,7 @@ def main():
     samples = _load_samples(args.samples)
     summary = {"by_chunk_seconds": {}}
     initializer_args = (
-        str(args.primary_alignment_path),
-        str(args.fallback_alignment_path) if args.fallback_alignment_path else None,
+        str(args.alignment_path),
         str(args.word2lexicon_path),
         str(args.textual_resource),
     )
@@ -357,8 +345,7 @@ def main():
                     "mixture_draws", "target_speaker_draws",
                     "all_zero_mixture_crop_retries",
                     "all_zero_mixture_crop_retry_exhausted",
-                    "alignment_primary_used", "alignment_fallback_used",
-                    "missing_primary_alignment", "missing_fallback_alignment",
+                    "aligned_target_speakers", "missing_alignment",
                     "missing_textual_resource", "no_complete_aligned_word",
                     "missing_lexicon_entry", "discarded_mixture_draws",
                 )
@@ -372,9 +359,7 @@ def main():
     summary["config"] = {
         "samples": str(args.samples),
         "textual_resource": str(args.textual_resource),
-        "primary_alignment_path": str(args.primary_alignment_path),
-        "fallback_alignment_path": (str(args.fallback_alignment_path)
-                                    if args.fallback_alignment_path else None),
+        "alignment_path": str(args.alignment_path),
         "word2lexicon_path": str(args.word2lexicon_path),
         "chunk_seconds": args.chunk_seconds,
         "epochs": args.epochs,

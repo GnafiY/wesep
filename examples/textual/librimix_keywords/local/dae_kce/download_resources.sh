@@ -12,7 +12,6 @@ output_dir=exp/kce
 
 mkdir -p "${output_dir}/testset"
 mkdir -p "${output_dir}/transcript_nemo"
-mkdir -p "${output_dir}/alignments"
 
 # Download one immutable input when it is absent or an earlier download is empty.
 download_if_missing() {
@@ -48,9 +47,19 @@ download_if_missing \
   "https://huggingface.co/GnafiY/DAE-TSE/resolve/main/transcript_nemo/transcript_nemo.jsonl" \
   "${output_dir}/transcript_nemo/transcript_nemo.jsonl"
 
-# Chunk-aware textual training reads these archives directly. The primary
-# resource is the official alignment set; the corrected Qwen3 fallback covers
-# utterances that the primary forced aligner did not contain.
+# The final published alignment archive already contains official records plus
+# Qwen-corrected replacements. Stage 0 extracts it once; runtime workers read
+# only the resulting directory.
 alignment_root=https://huggingface.co/GnafiY/DAE-TSE/resolve/main/LibriSpeech-Alignments
-download_if_missing   "${alignment_root}/LibriSpeech-Alignments.zip"   "${output_dir}/alignments/LibriSpeech-Alignments.zip"
-download_if_missing   "${alignment_root}/LibriSpeech-Alignments-Aligned-by-Qwen3-Aligner.zip"   "${output_dir}/alignments/LibriSpeech-Alignments-Aligned-by-Qwen3-Aligner.zip"
+alignment_archive=${output_dir}/LibriSpeech-Alignments.zip
+download_if_missing "${alignment_root}/LibriSpeech-Alignments.zip" "${alignment_archive}"
+alignment_stage=$(mktemp -d "${output_dir}/.alignments.XXXXXX")
+trap 'rm -rf "${alignment_stage}"' EXIT
+unzip -q "${alignment_archive}" -d "${alignment_stage}"
+if ! find "${alignment_stage}" -type f -name '*.alignment.txt' -print -quit | grep -q .; then
+  echo "Extracted alignment archive contains no .alignment.txt files: ${alignment_archive}" >&2
+  exit 1
+fi
+rm -rf "${output_dir}/alignments"
+mv "${alignment_stage}" "${output_dir}/alignments"
+trap - EXIT

@@ -5,18 +5,152 @@
 
 """Textual cue processors for the modular TSE dataset pipeline."""
 
+from dataclasses import dataclass
 import logging
+from pathlib import Path
 import random
 import re
 
 import numpy as np
 
-from wesep.dataset.textual_alignment import (
-    AlignmentNotFoundError,
-    LibriSpeechAlignmentReader,
-    load_word_to_phone_ids,
-)
 from wesep.utils.file_utils import load_json
+
+
+@dataclass(frozen=True)
+class AlignedWord:
+    """One lower-cased word with a half-open time interval in seconds."""
+
+    text: str
+    start: float
+    end: float
+
+
+@dataclass(frozen=True)
+class AlignmentLookup:
+    """Word alignments from the merged, canonical resource directory."""
+
+    words: tuple[AlignedWord, ...]
+
+
+class AlignmentNotFoundError(KeyError):
+    """Raised when an utterance is absent from the merged alignment resource."""
+
+    def __init__(self, utterance_id):
+        self.utterance_id = utterance_id
+        super().__init__(f"No alignment for {utterance_id}")
+
+
+class _AlignmentDirectory:
+    """Read chapter records from the canonical extracted alignment directory."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        if not self.path.is_dir():
+            raise NotADirectoryError(
+                f"Alignment resource must be an extracted directory: {self.path}")
+        self._members = {}
+        for member in self.path.rglob("*.alignment.txt"):
+            chapter_id = member.name.removesuffix(".alignment.txt")
+            if chapter_id in self._members:
+                raise ValueError(
+                    f"Duplicate chapter alignment {chapter_id} under {self.path}")
+            self._members[chapter_id] = member
+        if not self._members:
+            raise ValueError(f"No alignment files found under {self.path}")
+        self._chapter_cache = {}
+
+    @staticmethod
+    def _parse_records(raw_text: str) -> dict[str, tuple[AlignedWord, ...]]:
+        records = {}
+        for raw_line in raw_text.splitlines():
+            fields = raw_line.replace('"', "").split()
+            if len(fields) != 3:
+                raise ValueError(f"Malformed alignment record: {raw_line}")
+            utterance_id, raw_words, raw_ends = fields
+            # Official MFA records timestamp every comma position, including
+            # empty non-word intervals. Qwen-corrected records retain empty
+            # leading/trailing commas but timestamp only spoken words.
+            tokens = raw_words.split(",")
+            nonempty_tokens = [token for token in tokens if token]
+            ends = [float(value) for value in raw_ends.split(",")]
+            if len(ends) == len(tokens):
+                timed_tokens = tokens
+            elif len(ends) == len(nonempty_tokens):
+                timed_tokens = nonempty_tokens
+            else:
+                raise ValueError(
+                    f"Malformed alignment record for {utterance_id}: "
+                    f"{len(tokens)} comma tokens, {len(nonempty_tokens)} words, "
+                    f"but {len(ends)} end times")
+
+            previous_end = 0.0
+            words = []
+            for token, end in zip(timed_tokens, ends):
+                if end < previous_end:
+                    raise ValueError(
+                        f"Non-monotonic alignment end time for {utterance_id}")
+                if token:
+                    words.append(AlignedWord(token.lower(), previous_end, end))
+                previous_end = end
+            records[utterance_id] = tuple(words)
+        return records
+
+    def get(self, utterance_id: str) -> tuple[AlignedWord, ...] | None:
+        chapter_id = "-".join(utterance_id.split("-")[:2])
+        if chapter_id not in self._chapter_cache:
+            member = self._members.get(chapter_id)
+            self._chapter_cache[chapter_id] = (
+                self._parse_records(member.read_text(encoding="utf-8"))
+                if member is not None else {})
+        return self._chapter_cache[chapter_id].get(utterance_id)
+
+
+class LibriSpeechAlignmentReader:
+    """Look up word alignments in the merged extracted resource directory."""
+
+    def __init__(self, alignment_path: str | Path):
+        self._alignment = _AlignmentDirectory(alignment_path)
+
+    def get_words(self, utterance_id: str) -> AlignmentLookup:
+        words = self._alignment.get(utterance_id)
+        if words is None:
+            raise AlignmentNotFoundError(utterance_id)
+        return AlignmentLookup(words=words)
+
+    def close(self) -> None:
+        # Kept for the worker-generator lifecycle used by sample_textual_cue.
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+
+def load_word_to_phone_ids(path: str | Path) -> dict[str, tuple[int, ...]]:
+    """Load the DAE word-to-phoneme-ID lexicon used by the KCE tokenizer."""
+
+    lexicon = {}
+    with Path(path).open(encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            fields = line.split()
+            if not fields:
+                continue
+            if len(fields) < 2:
+                raise ValueError(
+                    f"Malformed lexicon entry in {path}:{line_number}: {line!r}")
+            word, raw_phone_ids = fields[0].lower(), fields[1:]
+            try:
+                lexicon[word] = tuple(int(phone_id) for phone_id in raw_phone_ids)
+            except ValueError as error:
+                raise ValueError(
+                    f"Non-integer phoneme ID in {path}:{line_number}") from error
+    if not lexicon:
+        raise ValueError(f"No lexicon entries found in {path}")
+    return lexicon
+
 
 # Resources are loaded once in each DataLoader worker process.
 _TEXTUAL_RESOURCE_CACHE = {}
@@ -119,8 +253,6 @@ def _chunk_selection_options(selection):
         return None
     if not isinstance(options, dict):
         raise ValueError("selection.chunk_aware must be a mapping")
-    if not options.get("enabled", False):
-        return None
     if selection.get("type") != "random":
         raise ValueError("Chunk-aware textual selection requires type='random'")
 
@@ -139,7 +271,6 @@ def _chunk_selection_options(selection):
         raise ValueError("Chunk-aware textual tolerance must be non-negative")
     return {
         "alignment_path": options["alignment_path"],
-        "fallback_alignment_path": options.get("fallback_alignment_path"),
         "word2lexicon_path": options["word2lexicon_path"],
         "no_word_policy": policy,
         "tolerance": float(tolerance),
@@ -192,7 +323,7 @@ def _complete_chunk_word_labels(
             utterance_id,
             "no_complete_aligned_word",
         )
-    return selected, lookup, utterance_id
+    return selected, utterance_id
 
 
 def _log_chunk_stats(stats, sample, final=False):
@@ -219,8 +350,9 @@ def sample_textual_cue(
 ):
     """Attach `textual_spk{i}` arrays from a configured textual resource.
 
-    With ``selection.chunk_aware.enabled``, random training keywords are
-    selected only from complete word alignments in the shared audio crop. An
+    With ``selection.chunk_aware`` enabled by the chunked dataset
+    configuration, random training keywords are selected only from complete
+    word alignments in the shared audio crop. An
     explicitly configured ``discard`` policy rejects the entire mixture if any
     target source has no usable aligned word.
     """
@@ -245,9 +377,7 @@ def sample_textual_cue(
     last_sample = None
     if chunk_options is not None:
         alignment_reader = LibriSpeechAlignmentReader(
-            chunk_options["alignment_path"],
-            chunk_options["fallback_alignment_path"],
-        )
+            chunk_options["alignment_path"])
         word_to_phone_ids = _get_word_to_phone_ids(
             chunk_options["word2lexicon_path"])
 
@@ -299,18 +429,15 @@ def sample_textual_cue(
                     )
                     break
                 try:
-                    labels, lookup, utterance_id = _complete_chunk_word_labels(
+                    labels, utterance_id = _complete_chunk_word_labels(
                         sample,
                         speaker_slot,
                         alignment_reader,
                         word_to_phone_ids,
                         chunk_options["tolerance"],
                     )
-                    stats[f"alignment_{lookup.source}"] = (
-                        stats.get(f"alignment_{lookup.source}", 0) + 1)
-                    if not lookup.primary_available:
-                        stats["missing_primary_alignment"] = (
-                            stats.get("missing_primary_alignment", 0) + 1)
+                    stats["aligned_target_speakers"] = (
+                        stats.get("aligned_target_speakers", 0) + 1)
                     selected_cues[speaker_slot] = np.asarray(
                         [phone_id for word in _select_random_word_labels(
                             labels, selection.get("word_range", [2, 6]))
@@ -319,13 +446,11 @@ def sample_textual_cue(
                     )
                 except AlignmentNotFoundError as error:
                     utterance_id = _utterance_id_for_slot(sample, speaker_slot)
-                    stats["missing_primary_alignment"] = (
-                        stats.get("missing_primary_alignment", 0) + 1)
-                    stats["missing_fallback_alignment"] = (
-                        stats.get("missing_fallback_alignment", 0) + 1)
+                    stats["missing_alignment"] = (
+                        stats.get("missing_alignment", 0) + 1)
                     failure = ChunkKeywordSelectionError(
                         sample["key"], speaker_slot, utterance_id,
-                        "missing_primary_and_fallback_alignment",
+                        "missing_alignment",
                     )
                     break
                 except ChunkKeywordSelectionError as error:

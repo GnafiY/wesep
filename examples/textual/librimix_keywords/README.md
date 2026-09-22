@@ -10,8 +10,10 @@ resources at https://github.com/GnafiY/DAE-TSE.
 
 Stage 0 downloads the frozen KCE checkpoint, its model configuration, the
 checkpoint-compatible phoneme map and lexicon, the official one- to four-keyword
-Libri2Mix test manifests, and the primary plus corrected fallback LibriSpeech
-alignment archives used by optional static chunk training.
+Libri2Mix test manifests, and the final merged
+`LibriSpeech-Alignments.zip` archive used by optional static chunk training.
+Stage 0 extracts the archive to `exp/kce/alignments`; dataset workers read only
+that extracted directory.
 
 Stage 1 expects an existing `Libri2Mix/wav16k/min` tree. It generates standard
 WeSep `samples.jsonl` files,
@@ -55,11 +57,13 @@ and direct text inference use `DAEPhonemeTokenizer` from
 The official configuration uses `batch_size: 1` and `whole_utt: true`, matching
 the full-context KCE training setup.
 
-For static chunk training, rebuild Stage 1 with `--chunk_aware true`. It adds
-complete-word selection from the primary and corrected fallback archives only to
-`train-100/cues.yaml`; dev and test remain whole-utterance. The required
-150-epoch simulation supports `no_word_policy: discard` for 6-second chunks:
-45 of 2,085,000 mixture draws (0.002%) were discarded.
+Stage 1 always records complete-word alignment metadata in
+`train-100/cues.yaml`; dev and test remain whole-utterance. The runtime config
+chooses the behavior: `dataset_args.whole_utt: true` samples from the complete
+transcript, while `whole_utt: false` enables complete-word selection in each
+static crop. The required 150-epoch simulation supports `no_word_policy:
+discard` for 6-second chunks: 45 of 2,085,000 mixture draws (0.002%) were
+discarded.
 
 ## Stages
 

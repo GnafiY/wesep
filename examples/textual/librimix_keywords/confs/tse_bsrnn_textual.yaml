@@ -1,5 +1,5 @@
 dataloader_args:
-  batch_size: 1
+  batch_size: 3
   drop_last: true
   num_workers: 6
   pin_memory: true
@@ -11,7 +11,8 @@ dataset_args:
   shuffle: true
   shuffle_args:
     shuffle_size: 2500
-  whole_utt: true
+  # whole_utt: true  # true: full-transcript cues; false: alignment-aware chunk cues
+  chunk_len: 112000 # 7 seconds at 16 kHz
   filter_len: false
   cues:
     textual:

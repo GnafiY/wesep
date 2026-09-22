@@ -4,28 +4,28 @@
 
 import json
 import random
-import zipfile
 
 import numpy as np
 import soundfile as sf
 import torch
 
 from wesep.dataset.collate import BASE_COLLECT_KEYS, tse_collate_fn
+from wesep.dataset.cues import _validate_textual_selection
 from wesep.dataset.processor import get_random_chunk, parse_raw, random_chunk
 from wesep.dataset.processor_textual import sample_textual_cue
-from wesep.dataset.textual_alignment import (
+from wesep.dataset.processor_textual import (
     AlignmentNotFoundError,
     LibriSpeechAlignmentReader,
 )
 from wesep.utils.losses import LossManager
 
 
-def _write_alignment_archive(path, chapter_id, records):
-    member = (
-        f"LibriSpeech/train-clean-100/{chapter_id.replace('-', '/')}/"
-        f"{chapter_id}.alignment.txt")
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(member, "\n".join(records) + "\n")
+def _write_alignment_file(root, chapter_id, records):
+    member = (root / "LibriSpeech" / "train-clean-100" /
+              chapter_id.split("-")[0] / chapter_id.split("-")[1] /
+              f"{chapter_id}.alignment.txt")
+    member.parent.mkdir(parents=True, exist_ok=True)
+    member.write_text("\n".join(records) + "\n")
 
 
 def _loss_value(loss_fn, estimate, target):
@@ -162,26 +162,26 @@ def test_whole_utterance_optional_malformed_cue_is_skipped(tmp_path):
 
 
 def test_alignment_reader_and_chunk_textual_selection(tmp_path):
-    primary = tmp_path / "primary.zip"
-    _write_alignment_archive(
-        primary,
+    alignment_root = tmp_path / "alignments"
+    _write_alignment_file(
+        alignment_root,
         "1-2",
         ['1-2-3 "hello,,world" "0.10,0.20,0.40"'],
     )
-    fallback_root = tmp_path / "fallback"
-    fallback_file = fallback_root / "train-clean-100/3/4/3-4.alignment.txt"
-    fallback_file.parent.mkdir(parents=True)
-    fallback_file.write_text('3-4-5 ",again,world," "0.25,0.50"\n')
+    _write_alignment_file(
+        alignment_root,
+        "3-4",
+        ['3-4-5 ",again,world," "0.25,0.50"'],
+    )
 
-    with LibriSpeechAlignmentReader(primary, fallback_root) as reader:
+    with LibriSpeechAlignmentReader(alignment_root) as reader:
         primary_lookup = reader.get_words("1-2-3")
         assert [(word.text, word.start, word.end) for word in primary_lookup.words] == [
             ("hello", 0.0, 0.10),
             ("world", 0.20, 0.40),
         ]
-        fallback_lookup = reader.get_words("3-4-5")
-        assert fallback_lookup.source == "fallback"
-        assert [(word.text, word.start, word.end) for word in fallback_lookup.words] == [
+        corrected_lookup = reader.get_words("3-4-5")
+        assert [(word.text, word.start, word.end) for word in corrected_lookup.words] == [
             ("again", 0.0, 0.25),
             ("world", 0.25, 0.50),
         ]
@@ -209,21 +209,37 @@ def test_alignment_reader_and_chunk_textual_selection(tmp_path):
         "type": "random",
         "word_range": [2, 2],
         "chunk_aware": {
-            "enabled": True,
-            "alignment_path": str(primary),
+            "alignment_path": str(alignment_root),
             "word2lexicon_path": str(lexicon),
             "no_word_policy": "discard",
         },
     }
+    chunked_selection = _validate_textual_selection(
+        selection, use_chunk_textual_selection=True)
     output = list(sample_textual_cue(
         iter([sample]),
         str(resource),
         key_field="mix_spk_id",
         cue_format=("json", "dae_keyword_phoneme"),
-        format_args={"selection": selection},
+        format_args={"selection": chunked_selection},
     ))
     assert len(output) == 1
     assert output[0]["textual_spk1"].tolist() == [1, 2]
+
+    # The same prepared cue metadata is ignored for whole-utterance mode;
+    # selection then uses the complete transcript labels rather than crop time.
+    whole_utterance_selection = _validate_textual_selection(
+        selection, use_chunk_textual_selection=False)
+    assert "chunk_aware" not in whole_utterance_selection
+    whole_utterance = list(sample_textual_cue(
+        iter([{key: value for key, value in sample.items()
+               if key not in {"chunk_start", "chunk_end"}}]),
+        str(resource),
+        key_field="mix_spk_id",
+        cue_format=("json", "dae_keyword_phoneme"),
+        format_args={"selection": whole_utterance_selection},
+    ))
+    assert whole_utterance[0]["textual_spk1"].tolist() == [99]
 
     no_word = dict(sample, chunk_start=100, chunk_end=200)
     assert list(sample_textual_cue(

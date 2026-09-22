@@ -69,7 +69,7 @@ def _resolve_config_path(value, field_name):
     return resolved
 
 
-def _validate_textual_selection(selection):
+def _validate_textual_selection(selection, use_chunk_textual_selection):
     if not isinstance(selection, dict):
         raise ValueError("DAE keyword textual cue requires a 'selection' mapping.")
     selection_type = selection.get("type")
@@ -80,12 +80,15 @@ def _validate_textual_selection(selection):
     chunk_aware = selection.get("chunk_aware")
     if chunk_aware is None:
         return selection
+    # Chunk keyword selection is a property of the current waveform pipeline,
+    # not of the prepared cue data. Whole-utterance training keeps ordinary
+    # transcript sampling; chunked training consumes the same metadata below.
+    if not use_chunk_textual_selection:
+        normalized_selection = dict(selection)
+        normalized_selection.pop("chunk_aware")
+        return normalized_selection
     if not isinstance(chunk_aware, dict):
         raise ValueError("selection.chunk_aware must be a mapping")
-    if not isinstance(chunk_aware.get("enabled", False), bool):
-        raise ValueError("selection.chunk_aware.enabled must be boolean")
-    if not chunk_aware.get("enabled", False):
-        return selection
     if selection_type != "random":
         raise ValueError(
             "Chunk-aware textual keyword selection requires type='random'")
@@ -94,10 +97,6 @@ def _validate_textual_selection(selection):
     for key in ("alignment_path", "word2lexicon_path"):
         normalized_chunk_aware[key] = _resolve_config_path(
             normalized_chunk_aware.get(key), f"selection.chunk_aware.{key}")
-    fallback = normalized_chunk_aware.get("fallback_alignment_path")
-    if fallback is not None:
-        normalized_chunk_aware["fallback_alignment_path"] = _resolve_config_path(
-            fallback, "selection.chunk_aware.fallback_alignment_path")
     if normalized_chunk_aware.get("no_word_policy") not in {"discard", "error"}:
         raise ValueError(
             "selection.chunk_aware.no_word_policy must be 'discard' or 'error'")
@@ -259,8 +258,13 @@ def build_textual_cue(dataset, cue_name, cue_conf, state, configs):
     # Keep representation-specific options outside the textual cue contract.
     format_args = {}
     if cue_format == ("json", "dae_keyword_phoneme"):
+        # Inference and whole-utterance training never need crop-aware cues.
+        # The data configuration always retains alignment metadata so either
+        # training mode can reuse exactly the same prepared data.
+        use_chunk_textual_selection = (
+            state == "train" and not configs.get("whole_utt", False))
         format_args["selection"] = _validate_textual_selection(
-            cue_conf.get("selection"))
+            cue_conf.get("selection"), use_chunk_textual_selection)
 
     return dataset.apply(
         processor_textual.sample_textual_cue,
