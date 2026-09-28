@@ -8,13 +8,19 @@ MODEL_REGISTRY = {
     "TSE_BSRNN_VISUAL":
     "wesep.models.tse_bsrnn_visual:TSE_BSRNN_VISUAL",
     "TSE_BSRNN_TEXTUAL": ("wesep.models.tse_bsrnn_textual:TSE_BSRNN_TEXTUAL"),
+    "TSE_BSRNN_AUDIO_TEXTUAL":
+    ("wesep.models.tse_bsrnn_audio_textual:TSE_BSRNN_AUDIO_TEXTUAL"),
     "TSE_BSRNN_SPATIAL":
     "wesep.models.tse_bsrnn_spatial:TSE_BSRNN_SPATIAL",
     "TSE_NBC2_SPATIAL":
     "wesep.models.tse_nbc2_spatial:TSE_NBC2_SPATIAL",
     "TSE_DPCCN_SPK":
     "wesep.models.tse_dpccn_spk:TSE_DPCCN_SPK",
+    "TSE_DPCCN_TEXTUAL":
+    "wesep.models.tse_dpccn_textual:TSE_DPCCN_TEXTUAL",
     "TSE_TFGRIDNET_SPK": ("wesep.models.tse_tfgridnet_spk:TSE_TFGRIDNET_SPK"),
+    "TSE_TFGRIDNET_TEXTUAL":
+    ("wesep.models.tse_tfgridnet_textual:TSE_TFGRIDNET_TEXTUAL"),
     "TSE_TFGRIDNET_VISUAL":
     ("wesep.models.tse_tfgridnet_visual:TSE_TFGRIDNET_VISUAL"),
     "TSE_SPEX_PLUS":

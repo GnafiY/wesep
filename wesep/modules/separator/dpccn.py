@@ -379,6 +379,8 @@ class DPCCN(nn.Module):
         x = x.permute(0, 1, 3, 2).contiguous()
         batch, _, frequencies, frames = x.shape
         x = x.view(batch, 2, self.nspk, frequencies, frames)
+        # Autocast can produce BF16 components; torch.complex needs FP32 here.
+        x = x.float()
         spectrum = torch.complex(x[:, 0], x[:, 1])
         return self.istft(spectrum, length=length)
 

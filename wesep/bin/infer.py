@@ -6,6 +6,7 @@ import time
 import fire
 import soundfile
 import torch
+import yaml
 from torch.utils.data import DataLoader
 
 from wesep.dataset.dataset import Dataset
@@ -37,7 +38,7 @@ def infer(config="confs/conf.yaml", **kwargs):
     sign_save_wav = configs.get(
         "save_wav", True)  # Control if save the extracted speech as .wav
 
-    rank = 0
+    rank = int(configs.get("rank", 0))
     set_seed(configs["seed"] + rank)
     gpu = configs.get("gpus", 0)
     if isinstance(gpu, (list, tuple)):
@@ -61,8 +62,22 @@ def infer(config="confs/conf.yaml", **kwargs):
     model_path = os.path.join(configs["checkpoint"])
     load_pretrained_model(model, model_path)
 
+    infer_tag = configs.get("infer_tag")
+    if infer_tag:
+        configs["exp_dir"] = os.path.join(configs["exp_dir"], "inference",
+                                          infer_tag)
+    os.makedirs(configs["exp_dir"], exist_ok=True)
+
     logger = get_logger(configs["exp_dir"], "infer.log")
     logger.info("Load checkpoint from {}".format(model_path))
+    configs["dataset_args"]["whole_utt"] = True
+    if rank == 0:
+        infer_config_path = os.path.join(configs["exp_dir"],
+                                         "inference.yaml")
+        with open(infer_config_path, "w", encoding="utf-8") as fout:
+            yaml.safe_dump(configs, fout, sort_keys=False, allow_unicode=True)
+        logger.info("Saved inference config to %s", infer_config_path)
+
     save_audio_dir = os.path.join(configs["exp_dir"], "audio")
     if sign_save_wav:
         if not os.path.exists(save_audio_dir):
@@ -79,7 +94,6 @@ def infer(config="confs/conf.yaml", **kwargs):
     model = model.to(device)
     model.eval()
 
-    configs["dataset_args"]["whole_utt"] = True
     test_dataset = Dataset(
         configs["data_type"],
         configs["test_data"],

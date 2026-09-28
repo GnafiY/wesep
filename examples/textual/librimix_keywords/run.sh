@@ -36,6 +36,7 @@ save_results=true
 use_pesq=true
 use_dnsmos=true
 dnsmos_use_gpu=true
+infer_tag=
 
 . "${WESEP_ROOT}/tools/parse_options.sh" || exit 1
 . "${WESEP_ROOT}/tools/resolve_config.sh" || exit 1
@@ -48,6 +49,10 @@ num_gpus=$(echo "${gpus}" | awk -F ',' '{print NF}')
 exp_dir=$(resolve_yaml_value "${exp_dir}" "${config}" "exp_dir" "exp/TSE_BSRNN_TEXTUAL_KEYWORDS")
 num_avg=$(resolve_yaml_value "${num_avg}" "${config}" "num_avg" "5")
 fs=$(resolve_fs "${fs}" "${config}" "16k")
+infer_tag=$(resolve_yaml_value "${infer_tag}" "${config}" "infer_tag" "")
+if [ -z "${infer_tag}" ] && [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
+  infer_tag=$(date -u +"%Y-%m-%d_%H-%M-%S")
+fi
 
 if [ ${stage} -le 0 ] && [ ${stop_stage} -ge 0 ]; then
   echo "Stage 0: Download official DAE-KCE resources"
@@ -118,8 +123,19 @@ if [ -z "${checkpoint}" ] && [ -f "${exp_dir}/models/avg_best_model.pt" ]; then
   checkpoint=${exp_dir}/models/avg_best_model.pt
 fi
 
+if [ -n "${checkpoint}" ]; then
+  exp_dir=$(dirname "$(dirname "${checkpoint}")")
+  config="${exp_dir}/config.yaml"
+fi
+infer_exp_dir="${exp_dir}/inference/${infer_tag}"
+
 if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
+  if [ -z "${checkpoint}" ] || [ ! -f "${config}" ]; then
+    echo "Stage 5 requires a checkpoint and its saved config.yaml: ${config}" >&2
+    exit 1
+  fi
   echo "Stage 5: Infer"
+  echo "Inference output: ${infer_exp_dir}"
 
   if [ "${num_gpus}" -eq 1 ]; then
     infer_gpu="${gpus#[}"
@@ -134,7 +150,9 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
       --test_cues "${data}/test/cues.yaml" \
       --test_samples "${data}/test/samples.jsonl" \
       --save_wav "${save_results}" \
-      ${checkpoint:+--checkpoint "${checkpoint}"}
+      --rank 0 \
+      ${checkpoint:+--checkpoint "${checkpoint}"} \
+      ${infer_tag:+--infer_tag "${infer_tag}"}
   else
     # Keep the same GPU-list convention as training (for example "[0,1,2,3]").
     gpu_list="${gpus#[}"
@@ -150,8 +168,6 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
     done
     perl "${WESEP_ROOT}/tools/split_scp.pl" "${test_list}" "${split_lists[@]}"
 
-    # Workers share the audio directory, but use independent logs and defer scp
-    # creation until every worker has completed, preventing concurrent rewrites.
     pids=()
     for i in "${!infer_gpus[@]}"; do
       python "${WESEP_ROOT}/wesep/bin/infer.py" --config "${config}" \
@@ -161,8 +177,10 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
         --test_cues "${data}/test/cues.yaml" \
         --test_samples "${data}/test/samples.jsonl" \
         --save_wav "${save_results}" \
-        --write_enhanced_scp false \
-        ${checkpoint:+--checkpoint "$checkpoint"} &
+        --rank "$i" \
+        ${checkpoint:+--checkpoint "$checkpoint"} \
+        ${infer_tag:+--infer_tag "$infer_tag"} \
+        &
       pids+=("$!")
     done
     trap 'kill "${pids[@]}" 2>/dev/null || true' INT TERM
@@ -172,21 +190,25 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
     trap - INT TERM
 
     if [[ "${save_results}" == "true" ]]; then
-      python -c "from wesep.utils.utils import generate_enahnced_scp; generate_enahnced_scp(r'${exp_dir}/audio', extension='wav')"
+      python -c "from wesep.utils.utils import generate_enahnced_scp; generate_enahnced_scp(r'${infer_exp_dir}/audio', extension='wav')"
     fi
   fi
 fi
 
 if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
+  if [ -z "${infer_tag}" ]; then
+    echo "Stage 6 requires --infer_tag when run without Stage 5." >&2
+    exit 1
+  fi
   echo "Stage 6: Score"
   python "${WESEP_ROOT}/tools/build_tse_reference_scp.py" \
     --samples "${data}/test/samples.jsonl" \
     --output "${data}/test/single.wav.scp" \
-    --inference-scp "${exp_dir}/audio/spk1.scp" \
+    --inference-scp "${infer_exp_dir}/audio/spk1.scp" \
     --check-source-files
   "${WESEP_ROOT}/tools/score.sh" \
     --dset "${data}/test" \
-    --exp_dir "${exp_dir}" \
+    --exp_dir "${infer_exp_dir}" \
     --fs "${fs}" \
     --use_pesq "${use_pesq}" \
     --use_dnsmos "${use_dnsmos}" \

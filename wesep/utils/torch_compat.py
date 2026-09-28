@@ -1,6 +1,7 @@
 """Compatibility helpers for supported PyTorch versions."""
 
 import torch
+from contextlib import nullcontext
 
 
 def register_load_state_dict_pre_hook(module, hook):
@@ -27,7 +28,10 @@ def create_cuda_grad_scaler(enabled):
 
 def cuda_autocast(enabled):
     """Create a CUDA autocast context across PyTorch versions."""
+    if not enabled:
+        return nullcontext()
+
     autocast = getattr(getattr(torch, "amp", None), "autocast", None)
     if autocast is not None:
-        return autocast("cuda", enabled=enabled)
-    return torch.cuda.amp.autocast(enabled=enabled)
+        return autocast("cuda", dtype=torch.bfloat16)
+    return torch.cuda.amp.autocast(dtype=torch.bfloat16)

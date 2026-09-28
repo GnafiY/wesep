@@ -1,0 +1,109 @@
+dataloader_args:
+  batch_size: 4
+  drop_last: true
+  num_workers: 6
+  pin_memory: true
+  prefetch_factor: 4
+
+# Validation uses full utterances; keep this at one mixture per batch.
+val_dataloader_args:
+  batch_size: 1
+
+dataset_args:
+  resample_rate: &sr 16000
+  sample_num_per_epoch: 0
+  shuffle: true
+  shuffle_args:
+    shuffle_size: 2500
+  # Train uses random 7-second chunks; validation remains full-utterance.
+  chunk_len: 112000
+  filter_len: false
+  cues:
+    audio:
+      use: true
+      required: true
+    textual:
+      use: true
+      required: true
+
+enable_amp: true
+exp_dir: exp/TSE_BSRNN_AUDIO_TEXTUAL
+gpus: [0, 1]
+log_batch_interval: 100
+
+loss:
+  - type: SISDR
+    output: speech
+    target: wav_target
+    weight: 1.0
+    stages: [train, val]
+
+model:
+  tse_model: TSE_BSRNN_AUDIO_TEXTUAL
+model_args:
+  tse_model:
+    separator:
+      sr: *sr
+      win: 512
+      stride: 128
+      feature_dim: &feature_dim 128
+      num_repeat: 6
+      causal: false
+      nspk: 1
+      channels: 1
+      reference_channel: 0
+    speaker:
+      features:
+        tfmap:
+          enabled: true
+          type: spec
+    textual:
+      features:
+        dae_kce:
+          enabled: true
+          padding_id: 0
+          bos_id: 71
+          eos_id: 72
+          tokenizer:
+            phoneme_map: ./exp/kce/phoneme2int.txt
+            lexicon: ./exp/kce/word2lexicon.txt
+          adapter:
+            output_dim: *feature_dim
+            num_layers: 3
+          fusion: FiLM
+          multi_fuse: true
+          pretrained: ./exp/kce/epoch_149.pt
+
+model_init:
+  tse_model: null
+
+num_avg: 5
+num_epochs: 150
+clip_grad: 5.0
+save_epoch_interval: 10
+
+optimizer:
+  tse_model: Adam
+optimizer_args:
+  tse_model:
+    lr: 0.001
+    weight_decay: 0.0001
+
+scheduler:
+  tse_model:
+    warmup:
+      enabled: false
+      by: epoch
+      epochs: 0
+      start_factor: 0.0
+    name: PlateauHalf
+    interval: validation
+    args:
+      patience: 3
+      early_stop_patience: 7
+      factor: 0.5
+      min_delta: 0.0
+      min_lr: 2.5e-05
+      early_stop: true
+
+seed: 42

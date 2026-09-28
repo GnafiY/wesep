@@ -74,11 +74,22 @@ def train(config="conf/config.yaml", **kwargs):
     world_size = int(os.environ["WORLD_SIZE"])
     gpu = int(configs["gpus"][rank])
     torch.cuda.set_device(gpu)
+    requested_amp = bool(configs.get("enable_amp", False))
+    bf16_supported = torch.cuda.is_bf16_supported(including_emulation=False)
+    enable_amp = requested_amp and bf16_supported
+    configs["enable_amp"] = enable_amp
     dist.init_process_group(backend="nccl")
 
     # Prepare rank-aware logging and the model output directory.
     model_dir = os.path.join(configs["exp_dir"], "models")
     logger = setup_logger(rank, configs["exp_dir"], gpu, MAX_NUM_log_files)
+    logger.info(
+        "AMP %s on GPU %s (requested=%s, BF16 supported=%s)",
+        "enabled" if enable_amp else "disabled",
+        gpu,
+        requested_amp,
+        bf16_supported,
+    )
 
     if world_size > 1:
         logger.info("training on multiple gpus, this gpu {}".format(gpu))
@@ -131,12 +142,15 @@ def train(config="conf/config.yaml", **kwargs):
         **configs["dataloader_args"],
         collate_fn=lambda batch: tse_collate_fn(batch, train_collect_keys),
     )
+    val_dataloader_args = dict(configs["dataloader_args"])
+    val_dataloader_args.update(configs.get("val_dataloader_args", {}))
     val_dataloader = DataLoader(
         val_dataset,
-        **configs["dataloader_args"],
+        **val_dataloader_args,
         collate_fn=lambda batch: tse_collate_fn(batch, val_collect_keys),
     )
     batch_size = configs["dataloader_args"]["batch_size"]
+    val_batch_size = val_dataloader_args["batch_size"]
     if configs["dataset_args"].get("sample_num_per_epoch", 0) > 0:
         sample_num_per_epoch = configs["dataset_args"]["sample_num_per_epoch"]
     else:
@@ -145,7 +159,7 @@ def train(config="conf/config.yaml", **kwargs):
     epoch_iter = sample_num_per_epoch // world_size // batch_size
     with open(configs["val_samples"], "r", encoding="utf-8") as f:
         val_sample_num = sum(1 for _ in f)
-    val_iter = val_sample_num // world_size // batch_size
+    val_iter = val_sample_num // world_size // val_batch_size
 
     if rank == 0:
         logger.info("<== Dataloaders ==>")
@@ -234,7 +248,9 @@ def train(config="conf/config.yaml", **kwargs):
     optimizer_list.append(optimizer)
     scheduler_list.append(scheduler)
 
-    scaler = create_cuda_grad_scaler(configs["enable_amp"])
+    scaler = create_cuda_grad_scaler(False)
+    logger.info("GradScaler initialized: enabled=%s, initial_scale=%s",
+                scaler.is_enabled(), scaler.get_scale())
 
     # Restore training state and checkpoint metadata when resuming.
     checkpoint_metadata = {}

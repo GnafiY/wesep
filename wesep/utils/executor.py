@@ -76,6 +76,15 @@ class Executor:
                     outputs = model(batch)
                     loss = loss_manager(outputs, batch, stage="train")
 
+                if not torch.isfinite(loss).all():
+                    speech = outputs.get("speech")
+                    speech_rms = (speech.detach().float().square().mean().sqrt().item()
+                                  if speech is not None else None)
+                    message = (f"Non-finite training loss at epoch={epoch}, batch={i}, "
+                               f"keys={batch.get('key')}, speech_rms={speech_rms}")
+                    logger.error(message)
+                    raise FloatingPointError(message)
+
                 losses.append(loss.item())
                 total_loss_avg = sum(losses) / len(losses)
 
@@ -83,6 +92,23 @@ class Executor:
                 optimizer.zero_grad()
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
+                if not scaler.is_enabled():
+                    grad_items = [(name, parameter.grad)
+                                  for name, parameter in model.named_parameters()
+                                  if parameter.grad is not None]
+                    if grad_items:
+                        finite = torch.stack([
+                            torch.isfinite(grad).all()
+                            for _, grad in grad_items
+                        ])
+                        if not finite.all().item():
+                            first_bad = (~finite).nonzero(as_tuple=False)[0].item()
+                            message = (
+                                f"Non-finite gradient at epoch={epoch}, batch={i}, "
+                                f"parameter={grad_items[first_bad][0]}, "
+                                f"keys={batch.get('key')}")
+                            logger.error(message)
+                            raise FloatingPointError(message)
                 clip_gradients(model, clip_grad)
                 scaler.step(optimizer)
                 scaler.update()
@@ -139,6 +165,12 @@ class Executor:
                 with cuda_autocast(enabled=enable_amp):
                     outputs = model(batch)
                     loss = loss_manager(outputs, batch, stage="val")
+
+                if not torch.isfinite(loss).all():
+                    message = (f"Non-finite validation loss at epoch={epoch}, batch={i}, "
+                               f"keys={batch.get('key')}")
+                    logger.error(message)
+                    raise FloatingPointError(message)
 
                 losses.append(loss.item())
                 total_loss_avg = sum(losses) / len(losses)
