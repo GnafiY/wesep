@@ -25,6 +25,8 @@ MODEL_REGISTRY = {
     ("wesep.models.tse_tfgridnet_visual:TSE_TFGRIDNET_VISUAL"),
     "TSE_SPEX_PLUS":
     "wesep.models.tse_spex_plus:TSE_SPEX_PLUS",
+    "BSS_BSRNN":
+    "wesep.models.bss_bsrnn:BSS_BSRNN",
 }
 
 

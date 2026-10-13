@@ -2,6 +2,8 @@ import auraloss
 import torch
 import torch.nn as nn
 
+from wesep.utils.bss_losses import PITSISDRLoss
+
 LOSS_REGISTRY = {
     "L1": nn.L1Loss,
     "L2": nn.MSELoss,
@@ -11,6 +13,8 @@ LOSS_REGISTRY = {
     "SISDR": auraloss.time.SISDRLoss,
     "SISNR": auraloss.time.SISDRLoss,
     "SNR": auraloss.time.SNRLoss,
+    "PIT_SISDR": PITSISDRLoss,
+    "PIT_SISNR": PITSISDRLoss,
 }
 
 
@@ -69,9 +73,9 @@ class LossManager(nn.Module):
         return value.mean() if value.ndim > 0 else value
 
     def _waveform_loss(self, loss_fn, spec, estimate, target, valid_lengths):
-        """Optionally exclude right-padding from only SI-SDR/SI-SNR losses."""
+        """Exclude right-padding from configured SI and PIT waveform losses."""
         if (not self.use_valid_length_for_sisnr_loss
-                or spec["type"] not in {"SISDR", "SISNR"}
+                or spec["type"] not in {"SISDR", "SISNR", "PIT_SISDR", "PIT_SISNR"}
                 or valid_lengths is None):
             return self._mean_loss(loss_fn, estimate, target)
 

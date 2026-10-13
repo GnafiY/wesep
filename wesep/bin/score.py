@@ -1,6 +1,7 @@
 # ported from
 # https://github.com/espnet/espnet/blob/master/espnet2/bin/enh_scoring.py
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -12,7 +13,7 @@ from pystoi import stoi
 
 from wesep.utils.datadir_writer import DatadirWriter
 from wesep.utils.file_utils import SoundScpReader
-from wesep.utils.score import cal_SISNR
+from wesep.utils.score import cal_PIT_SISNRi, cal_SISNR
 from wesep.utils.utils import ArgumentParser, get_commandline_args, str2bool
 
 
@@ -40,6 +41,8 @@ def scoring(
     use_dnsmos: bool,
     dnsmos_args: Dict,
     use_pesq: bool,
+    task: str = "tse",
+    mixture_scp: str = None,
 ):
     logging.basicConfig(
         level=log_level,
@@ -96,14 +99,21 @@ def scoring(
 
     assert len(ref_scp) == len(inf_scp), "len(ref_scp) != len(inf_scp)"
     num_spk = len(ref_scp)
+    is_bss = task == "bss"
+    if is_bss and (num_spk not in (2, 3) or not mixture_scp):
+        raise ValueError("BSS scoring requires 2/3 source SCPs and mixture_scp")
 
     keys = [
         line.rstrip().split(maxsplit=1)[0]
         for line in open(key_file, encoding="utf-8")
     ]
+    if is_bss and (not keys or len(set(keys)) != len(keys)):
+        raise ValueError("BSS key_file must contain unique, nonempty keys")
 
     ref_readers, ref_audio_format = get_readers(ref_scp, dtype)
     inf_readers, inf_audio_format = get_readers(inf_scp, dtype)
+    mixture_reader = SoundScpReader(mixture_scp, dtype=dtype) if is_bss else None
+    bss_scores = []
 
     # get sample rate
     retval = ref_readers[0][keys[0]]
@@ -118,6 +128,10 @@ def scoring(
     # check keys
     for inf_reader, ref_reader in zip(inf_readers, ref_readers):
         assert inf_reader.keys() == ref_reader.keys()
+    if is_bss:
+        for reader in [*ref_readers, *inf_readers, mixture_reader]:
+            if set(reader.keys()) != set(keys):
+                raise ValueError("BSS SCP keys must match key_file")
 
     with DatadirWriter(output_dir) as writer:
         for n, key in enumerate(keys):
@@ -144,6 +158,28 @@ def scoring(
                 inf = inf[..., ref_channel]
 
             assert ref.shape == inf.shape, (ref.shape, inf.shape)
+
+            if is_bss:
+                mix_rate, mix = mixture_reader[key]
+                if mix.ndim == 2:
+                    mix = mix[:, ref_channel]
+                if mix.shape != ref[0].shape:
+                    raise ValueError(f"Mixture/source length mismatch for {key}")
+                for reader in [*ref_readers, *inf_readers]:
+                    if reader[key][0] != mix_rate or mix_rate != sample_rate:
+                        raise ValueError(f"Sample rate mismatch for {key}")
+                scores, improvement, perm = cal_PIT_SISNRi(inf, ref, mix)
+                baseline = scores - improvement
+                bss_scores.append([scores.mean(), improvement.mean(), baseline.mean()])
+                writer["permutation"][key] = " ".join(str(p + 1) for p in perm)
+                writer["SI_SDR"][key] = str(scores.mean())
+                writer["SI_SDRi"][key] = str(improvement.mean())
+                for i in range(num_spk):
+                    writer[f"SI_SDR_spk{i + 1}"][key] = str(scores[i])
+                    writer[f"SI_SDRi_spk{i + 1}"][key] = str(improvement[i])
+                    writer[f"SI_SDR_mix_spk{i + 1}"][key] = str(baseline[i])
+                    writer[f"wav_spk{i + 1}"][key] = inf_readers[perm[i]].data[key]
+                continue
 
             sdr, sir, sar, perm = bss_eval_sources(ref,
                                                    inf,
@@ -214,6 +250,16 @@ def scoring(
                         raise ValueError(
                             f"Unknown audio format: {inf_audio_format}")
 
+    if is_bss:
+        means = np.mean(bss_scores, axis=0)
+        summary = dict(num_mixtures=len(keys), num_sources=num_spk,
+                       SI_SDR=float(means[0]), SI_SDRi=float(means[1]),
+                       SI_SDR_mix=float(means[2]))
+        with (Path(output_dir) / "summary.json").open("w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+            f.write("\n")
+        logging.info("BSS summary: %s", summary)
+
 
 def get_parser():
     parser = ArgumentParser(
@@ -256,6 +302,8 @@ def get_parser():
     )
     group.add_argument("--key_file", type=str)
     group.add_argument("--ref_channel", type=int, default=0)
+    group.add_argument("--task", choices=("tse", "bss"), default="tse")
+    group.add_argument("--mixture_scp", type=str, default=None)
 
     group = parser.add_argument_group("DNSMOS related")
     group.add_argument("--use_dnsmos", type=str2bool, default=False)

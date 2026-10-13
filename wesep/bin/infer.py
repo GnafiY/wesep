@@ -12,12 +12,15 @@ from torch.utils.data import DataLoader
 from wesep.dataset.dataset import Dataset
 from wesep.dataset.collate import (
     BASE_COLLECT_KEYS,
+    BSS_COLLECT_KEYS,
+    bss_collate_fn,
     build_collect_keys,
     tse_collate_fn,
 )
 from wesep.models import get_model
 from wesep.utils.checkpoint import load_pretrained_model
-from wesep.utils.score import cal_SISNRi
+from wesep.utils.datadir_writer import DatadirWriter
+from wesep.utils.score import cal_PIT_SISNRi, cal_SISNRi
 from wesep.utils.file_utils import load_yaml
 from wesep.utils.utils import (
     generate_enahnced_scp,
@@ -35,6 +38,11 @@ def infer(config="confs/conf.yaml", **kwargs):
     accept_cnt = 0
 
     configs = parse_config_or_kwargs(config, **kwargs)
+    is_bss = configs.get("task", "tse") == "bss"
+    if is_bss:
+        num_sources = configs["num_sources"]
+        if configs["model_args"]["tse_model"]["separator"]["nspk"] != num_sources:
+            raise ValueError("num_sources must match the saved model configuration")
     sign_save_wav = configs.get(
         "save_wav", True)  # Control if save the extracted speech as .wav
 
@@ -68,9 +76,11 @@ def infer(config="confs/conf.yaml", **kwargs):
                                           infer_tag)
     os.makedirs(configs["exp_dir"], exist_ok=True)
 
-    logger = get_logger(configs["exp_dir"], "infer.log")
+    logger = get_logger(configs.get("log_dir", configs["exp_dir"]), "infer.log")
     logger.info("Load checkpoint from {}".format(model_path))
     configs["dataset_args"]["whole_utt"] = True
+    if is_bss:
+        configs["dataset_args"]["shuffle"] = False
     if rank == 0:
         infer_config_path = os.path.join(configs["exp_dir"],
                                          "inference.yaml")
@@ -101,9 +111,9 @@ def infer(config="confs/conf.yaml", **kwargs):
         state="test",
         repeat_dataset=configs.get("repeat_dataset", False),
         cues_yaml=configs.get("test_cues", None),
-        expand_targets=True,
+        expand_targets=not is_bss,
     )
-    test_collect_keys = build_collect_keys(
+    test_collect_keys = BSS_COLLECT_KEYS if is_bss else build_collect_keys(
         load_yaml(configs["test_cues"]),
         configs["dataset_args"],
         BASE_COLLECT_KEYS,
@@ -111,13 +121,14 @@ def infer(config="confs/conf.yaml", **kwargs):
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=1,
-        collate_fn=lambda batch: tse_collate_fn(batch, test_collect_keys))
+        collate_fn=lambda batch: bss_collate_fn(batch, test_collect_keys)
+        if is_bss else tse_collate_fn(batch, test_collect_keys))
 
     with open(configs["test_data"], "r", encoding="utf-8") as f:
         test_iter = sum(1 for _ in f)
     logger.info("test mixtures: {}".format(test_iter))
 
-    with torch.no_grad():
+    with torch.no_grad(), DatadirWriter(save_audio_dir) as writer:
         for i, batch in enumerate(test_dataloader):
             spk = batch["spk"]
             key = batch["key"]
@@ -129,6 +140,34 @@ def infer(config="confs/conf.yaml", **kwargs):
 
             model_outputs = model(batch)
             speech = model_outputs["speech"]
+            if is_bss:
+                if speech.shape != batch["wav_sources"].shape or speech.size(1) != num_sources:
+                    raise RuntimeError(
+                        f"BSS expects [B, {num_sources}, T], got {tuple(speech.shape)}")
+                for idx, utt_key in enumerate(key):
+                    length = int(batch["valid_lengths"][idx])
+                    ests = speech[idx, :, :length].cpu().numpy()
+                    ref = batch["wav_sources"][idx, :, :length].cpu().numpy()
+                    mix = batch["wav_mix"][idx, 0, :length].cpu().numpy()
+                    sisnr, delta, perm = cal_PIT_SISNRi(ests, ref, mix)
+                    if sign_save_wav:
+                        for source in range(num_sources):
+                            file_path = os.path.abspath(os.path.join(
+                                save_audio_dir, f"{utt_key}_s{source + 1}.wav"))
+                            soundfile.write(
+                                file_path, ests[source],
+                                sample_rate, subtype="FLOAT")
+                            writer[f"spk{source + 1}.scp"][utt_key] = file_path
+                    total_cnt += 1
+                    for source in range(num_sources):
+                        logger.info(
+                            "Num=%s | Utt=%s | Target speaker=%s | Output source=%s | SI-SNR=%.2f | SI-SNRi=%.2f",
+                            total_cnt, utt_key, spk[idx][source], perm[source] + 1,
+                            sisnr[source], delta[source])
+                    total_SISNR += sisnr.sum()
+                    total_SISNRi += delta.sum()
+                    accept_cnt += (delta > 1).sum()
+                continue
             if speech.ndim != 3 or speech.size(1) != 1:
                 raise RuntimeError(
                     "Current TSE inference expects speech shaped [B, 1, T], "
@@ -174,15 +213,20 @@ def infer(config="confs/conf.yaml", **kwargs):
 
         end = time.time()
     # generate the scp file of the enhanced speech for scoring
-    if sign_save_wav:
+    if sign_save_wav and not is_bss:
         generate_enahnced_scp(os.path.abspath(save_audio_dir), extension="wav")
 
     logger.info("Time Elapsed: {:.1f}s".format(end - start))
-    logger.info("Average SI-SNR: {:.2f}".format(total_SISNR / total_cnt))
-    logger.info("Average SI-SNRi: {:.2f}".format(total_SISNRi / total_cnt))
+    if is_bss:
+        logger.info("Processed %s mixtures, %s reference speakers",
+                    total_cnt, total_cnt * num_sources)
+    score_cnt = total_cnt * num_sources if is_bss else total_cnt
+    logger.info("Average SI-SNR: {:.2f}".format(total_SISNR / score_cnt))
+    logger.info("Average SI-SNRi: {:.2f}".format(total_SISNRi / score_cnt))
     logger.info(
-        "Acceptance rate of Utterances with SI-SDRi > 1 dB: {:.2f}".format(
-            accept_cnt / total_cnt * 100))
+        "Acceptance rate of {} with SI-SDRi > 1 dB: {:.2f}".format(
+            "reference speakers" if is_bss else "Utterances",
+            accept_cnt / score_cnt * 100))
 
 
 if __name__ == "__main__":

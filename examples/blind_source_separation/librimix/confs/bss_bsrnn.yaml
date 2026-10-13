@@ -1,0 +1,97 @@
+# Shared two/three-source configuration for wesep/bin/train.py.
+# CLI num_sources is propagated into both the separator and PIT loss.
+task: bss
+num_sources: &num_sources 2
+data_type: raw
+seed: 42
+exp_dir: exp/BSS_BSRNN
+gpus: [0]
+enable_amp: true
+find_unused_parameters: false
+log_batch_interval: 100
+
+dataloader_args:
+  batch_size: 25  # Mixtures per GPU; each mixture has num_sources references.
+  drop_last: true
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+
+val_dataloader_args:
+  batch_size: 1
+  drop_last: false
+
+dataset_args:
+  resample_rate: &sr 16000
+  sample_num_per_epoch: 0
+  shuffle: true
+  shuffle_args:
+    shuffle_size: 2500
+  whole_utt: false
+  chunk_len: 96000  # 6 seconds at 16 kHz.
+  chunk_random_start: true
+  chunk_short_policy: pad
+  online_mix: false
+  noise_prob: 0
+  reverb_prob: 0
+  cues: {}
+
+val_dataset_args:
+  whole_utt: true
+  shuffle: false
+
+# Exclude right-padding from SI-SDR calculations and source assignment.
+use_valid_length_for_sisnr_loss: true
+loss:
+  - type: PIT_SISDR
+    output: speech
+    target: wav_sources
+    weight: 1.0
+    stages: [train, val]
+    args:
+      num_sources: *num_sources
+
+# get_model already supports module:class names without changing its registry.
+# "tse_model" remains a compatibility key in the training infrastructure;
+# the selected model is a new, cue-free BSS wrapper you implement.
+model:
+  tse_model: wesep.models.bss_bsrnn:BSS_BSRNN
+model_args:
+  tse_model:
+    separator:
+      sr: *sr
+      win: 512
+      stride: 128
+      feature_dim: 128
+      num_repeat: 6
+      causal: false
+      nspk: *num_sources
+      channels: 1
+      reference_channel: 0
+
+model_init:
+  tse_model: null
+
+num_avg: 5
+num_epochs: 150
+clip_grad: 5.0
+save_epoch_interval: 10
+
+optimizer:
+  tse_model: Adam
+optimizer_args:
+  tse_model:
+    lr: 0.001
+    weight_decay: 0.0001
+
+scheduler:
+  tse_model:
+    warmup:
+      enabled: false
+      by: epoch
+      epochs: 0
+      start_factor: 0.0
+    name: ExponentialDecrease
+    interval: step
+    args:
+      final_lr: 2.5e-05

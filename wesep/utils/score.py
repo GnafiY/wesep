@@ -1,3 +1,5 @@
+from itertools import permutations
+
 import numpy as np
 from joblib import Parallel, delayed
 from pesq import pesq
@@ -34,6 +36,22 @@ def cal_SISNRi(est, ref, mix, eps=1e-8):
     sisnr2 = cal_SISNR(mix, ref)
 
     return sisnr1, sisnr1 - sisnr2
+
+
+def cal_PIT_SISNRi(est, ref, mix):
+    """Return per-reference SI-SNR, improvement, and utterance PIT assignment.
+
+    est/ref: [S, T]; mix: [T]. Assignment maps each reference to an estimate.
+    """
+    assert est.shape == ref.shape and ref.ndim == 2
+    assert mix.shape == ref[0].shape
+    num_sources = ref.shape[0]
+    pairwise = np.array([[cal_SISNR(source, target) for source in est] for target in ref])
+    perm = max(permutations(range(num_sources)),
+               key=lambda p: pairwise[np.arange(num_sources), p].mean())
+    scores = pairwise[np.arange(num_sources), perm]
+    baseline = np.array([cal_SISNR(mix, target) for target in ref])
+    return scores, scores - baseline, perm
 
 
 def cal_PESQ(est, ref):

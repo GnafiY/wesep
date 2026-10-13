@@ -29,6 +29,8 @@ import wesep.utils.schedulers as schedulers
 from wesep.dataset.dataset import Dataset
 from wesep.dataset.collate import (
     BASE_COLLECT_KEYS,
+    BSS_COLLECT_KEYS,
+    bss_collate_fn,
     build_collect_keys,
     tse_collate_fn,
 )
@@ -53,14 +55,20 @@ logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 
 def train(config="conf/config.yaml", **kwargs):
-    """Trains a model on the given features and spk labels.
+    """Train target extraction or blind separation with shared infrastructure.
 
     :config: A training configuration. Note that all parameters in the
              config can also be manually adjusted with --ARG VALUE
     :returns: None
     """
     configs = parse_config_or_kwargs(config, **kwargs)
-    labels = load_yaml(configs["train_cues"]).get("labels", {})
+    is_bss = configs.get("task", "tse") == "bss"
+    if is_bss:
+        configs["model_args"]["tse_model"]["separator"]["nspk"] = configs["num_sources"]
+        for loss in configs["loss"]:
+            if loss["type"] in {"PIT_SISDR", "PIT_SISNR"}:
+                loss.setdefault("args", {})["num_sources"] = configs["num_sources"]
+    labels = {} if is_bss else load_yaml(configs["train_cues"]).get("labels", {})
     if "speaker_label" in labels:
         spk2label = load_json(labels["speaker_label"]["resource"])
         configs["model_args"]["tse_model"]["num_speakers"] = len(spk2label)
@@ -125,29 +133,31 @@ def train(config="conf/config.yaml", **kwargs):
         val_dataset_args,
         state="val",
         repeat_dataset=True,
-        cues_yaml=configs.get("val_cues", None),
+        cues_yaml=None if is_bss else configs.get("val_cues", None),
     )
-    train_collect_keys = build_collect_keys(
-        load_yaml(configs["train_cues"]),
-        train_dataset_args,
-        BASE_COLLECT_KEYS,
-    )
-    val_collect_keys = build_collect_keys(
-        load_yaml(configs["val_cues"]),
-        val_dataset_args,
-        BASE_COLLECT_KEYS,
-    )
+    if is_bss:
+        train_collect_keys = BSS_COLLECT_KEYS
+        val_collect_keys = BSS_COLLECT_KEYS
+    else:
+        train_collect_keys = build_collect_keys(
+            load_yaml(configs["train_cues"]), train_dataset_args, BASE_COLLECT_KEYS)
+        val_collect_keys = build_collect_keys(
+            load_yaml(configs["val_cues"]), val_dataset_args, BASE_COLLECT_KEYS)
     train_dataloader = DataLoader(
         train_dataset,
         **configs["dataloader_args"],
-        collate_fn=lambda batch: tse_collate_fn(batch, train_collect_keys),
+        collate_fn=lambda batch: (
+            bss_collate_fn(batch, train_collect_keys) if is_bss
+            else tse_collate_fn(batch, train_collect_keys)),
     )
     val_dataloader_args = dict(configs["dataloader_args"])
     val_dataloader_args.update(configs.get("val_dataloader_args", {}))
     val_dataloader = DataLoader(
         val_dataset,
         **val_dataloader_args,
-        collate_fn=lambda batch: tse_collate_fn(batch, val_collect_keys),
+        collate_fn=lambda batch: (
+            bss_collate_fn(batch, val_collect_keys) if is_bss
+            else tse_collate_fn(batch, val_collect_keys)),
     )
     batch_size = configs["dataloader_args"]["batch_size"]
     val_batch_size = val_dataloader_args["batch_size"]

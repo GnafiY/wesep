@@ -107,6 +107,12 @@ BASE_COLLECT_KEYS = {
     },
 }
 
+BSS_COLLECT_KEYS = {
+    key: dict(BASE_COLLECT_KEYS[key])
+    for key in ("wav_mix", "spk", "key", "num_speaker")
+}
+BSS_COLLECT_KEYS["wav_sources"] = dict(BASE_COLLECT_KEYS["wav_target"])
+
 AUX_KEY_MAP = {
     "audio": "audio_aux",
     "spatial": "spatial_aux",
@@ -240,6 +246,79 @@ def _fallback_tensor(ref_tensor, default_shape, fill_value, out_key):
             f"[collate] Cannot infer fallback shape for {out_key!r}: "
             "no real sample exists in batch and no default_shape is set.")
     return torch.full(tuple(default_shape), fill_value)
+
+
+def bss_collate_fn(batch, collect_keys):
+    """Collect mix/spk fields without expanding the mixture batch axis.
+
+    Like tse_collate_fn, collect_keys defines each output field. Speaker
+    tensors are grouped per mixture as [S, T], giving [B, S, T] after stacking.
+    """
+    if not batch:
+        return {}
+
+    # ---- 1) Keep source counts and valid lengths at mixture level ----
+    num_speakers = [int(sample["num_speaker"]) for sample in batch]
+    if len(set(num_speakers)) != 1:
+        raise ValueError("BSS requires the same source count within a batch")
+    valid_lengths = []
+    for sample in batch:
+        mix = _to_tensor(sample["wav_mix"])
+        if mix.ndim != 2 or mix.shape[0] != 1:
+            raise ValueError("BSS requires mono [1, T] mixtures")
+        valid_length = int(sample.get("valid_length", mix.shape[-1]))
+        if not 0 < valid_length <= mix.shape[-1]:
+            raise ValueError(f"Invalid valid_length={valid_length}")
+        valid_lengths.append(valid_length)
+
+    new_batch = {"valid_lengths": torch.tensor(valid_lengths, dtype=torch.long)}
+
+    # ---- 2) Collect registered fields with the same specs as TSE ----
+    for out_key, spec in collect_keys.items():
+        key_tpl = spec.get("key_tpl", None)
+        axis = spec.get("axis", "mix")
+        align = spec.get("align", None)
+        value_type = spec["value_type"]
+        fill_value = spec.get("fill_value", 0.0)
+        pad_mode = spec.get("pad_mode", "constant")
+        batch_vals = []
+        for sample, ns in zip(batch, num_speakers):
+            if axis == "mix":
+                values = [sample[out_key]]
+            elif axis == "spk":
+                values = [sample[key_tpl.format(i)] for i in range(1, ns + 1)]
+            else:
+                raise ValueError(f"[collate] Unknown axis: {axis}")
+
+            if value_type == "meta":
+                batch_vals.append(values[0] if axis == "mix" else values)
+            elif value_type == "tensor":
+                values = [_to_tensor(value) for value in values]
+                if out_key == "wav_sources" and any(
+                        value.shape != sample["wav_mix"].shape for value in values):
+                    raise ValueError("BSS sources must match mixture shape")
+                batch_vals.append(values[0] if axis == "mix"
+                                  else torch.cat(values, dim=0))
+            else:
+                raise ValueError(f"[collate] Unknown value_type: {value_type}")
+
+        if value_type == "tensor":
+            if align is not None:
+                lengths = [value.shape[-1] for value in batch_vals]
+                if align == "max":
+                    target_len = max(lengths)
+                elif align == "min":
+                    target_len = min(lengths)
+                else:
+                    raise ValueError(f"[collate] Unknown align mode: {align}")
+                batch_vals = [
+                    _pad_or_crop_to_len(value, target_len, fill_value, pad_mode)
+                    for value in batch_vals
+                ]
+            new_batch[out_key] = torch.stack(batch_vals, dim=0)
+        else:
+            new_batch[out_key] = batch_vals
+    return new_batch
 
 
 def tse_collate_fn(batch, collect_keys):
